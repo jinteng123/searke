@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/compression"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -37,10 +38,15 @@ type Meta struct {
 	Digests   map[string]string `json:"digests" yaml:"digests"` // platform -> manifest digest
 }
 
+// epochTime normalizes all timestamps so identical inputs produce
+// identical digests (reproducible builds).
+var epochTime = time.Unix(0, 0).UTC()
+
 // Build verifies the bundle directory and produces an OCI Image Index
 // at outDir (OCI Image Layout, no daemon required). Each platform gets
 // its own sub-image containing only that architecture's payload.
-func Build(bundleDir, outDir string) (*Meta, error) {
+// tag, when set, is recorded as org.opencontainers.image.ref.name.
+func Build(bundleDir, outDir, tag string) (*Meta, error) {
 	b, err := bundle.VerifyBundleDir(bundleDir)
 	if err != nil {
 		return nil, fmt.Errorf("bundle verification failed, refusing to build image: %w", err)
@@ -82,19 +88,49 @@ func Build(bundleDir, outDir string) (*Meta, error) {
 
 	ii := mutate.AppendManifests(empty.Index, addenda...)
 	ii = mutate.IndexMediaType(ii, types.OCIImageIndex)
-	ii = mutate.Annotations(ii, map[string]string{
+	ann := map[string]string{
 		AnnRKE2Version: b.Spec.Version,
 		AnnCNI:         cni,
 		AnnSource:      bundle.ReleaseBase,
-	}).(v1.ImageIndex)
+	}
+	if tag != "" {
+		ann["org.opencontainers.image.ref.name"] = tag
+	}
+	ii = mutate.Annotations(ii, ann).(v1.ImageIndex)
 
-	if err := os.RemoveAll(outDir); err != nil {
+	if err := prepareLayoutDir(outDir); err != nil {
 		return nil, err
 	}
 	if _, err := layout.Write(outDir, ii); err != nil {
 		return nil, fmt.Errorf("write OCI layout: %w", err)
 	}
 	return meta, nil
+}
+
+// prepareLayoutDir refuses to wipe anything that isn't clearly an OCI
+// layout dir: missing dir is created, empty dir is used as-is, a dir
+// containing oci-layout is emptied, anything else errors out.
+func prepareLayoutDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return os.MkdirAll(dir, 0o755)
+	}
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, "oci-layout")); err != nil {
+		return fmt.Errorf("%s is not empty and not an OCI layout directory; refusing to overwrite", dir)
+	}
+	// Empty the layout's contents but keep the directory itself.
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // buildPlatformImage assembles the single-layer image for one platform.
@@ -105,7 +141,11 @@ func buildPlatformImage(bundleDir, version, cni string, p bundle.Platform) (v1.I
 	if err != nil {
 		return nil, v1.Hash{}, "", err
 	}
-	layer, err := tarball.LayerFromFile(tarPath)
+	// The payload is already zst-compressed; zstd layers avoid the
+	// pointless gzip pass and keep pure-OCI media types.
+	layer, err := tarball.LayerFromFile(tarPath,
+		tarball.WithCompression(compression.ZStd),
+		tarball.WithMediaType(types.OCILayerZStd))
 	if err != nil {
 		os.Remove(tarPath)
 		return nil, v1.Hash{}, "", fmt.Errorf("%s: create layer: %w", p, err)
@@ -115,10 +155,10 @@ func buildPlatformImage(bundleDir, version, cni string, p bundle.Platform) (v1.I
 		return nil, v1.Hash{}, "", err
 	}
 	img = mutate.MediaType(img, types.OCIManifestSchema1)
+	img = mutate.ConfigMediaType(img, types.OCIConfigJSON)
 	img, err = mutate.ConfigFile(img, &v1.ConfigFile{
 		OS:           p.OS,
 		Architecture: p.Arch,
-		Created:      v1.Time{Time: time.Now().UTC()},
 		Config: v1.Config{
 			Labels: map[string]string{
 				AnnRKE2Version: version,
@@ -159,7 +199,7 @@ func writeLayerTar(bundleDir string, p bundle.Platform) (string, error) {
 			Name:    name,
 			Mode:    mode,
 			Size:    fi.Size(),
-			ModTime: fi.ModTime(),
+			ModTime: epochTime, // reproducible: identical inputs, identical digest
 		}); err != nil {
 			return err
 		}

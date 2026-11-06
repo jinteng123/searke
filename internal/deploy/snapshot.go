@@ -97,31 +97,68 @@ func SnapshotPull(opts *Options, name, outDir string) error {
 	return nil
 }
 
-// SnapshotRestore performs a cluster-reset restore on the bootstrap
-// server ONLY. Other server nodes must be rejoined afterwards (rerun
-// `searke apply`). Requires confirm=true (the --yes flag).
+// SnapshotRestore performs an etcd cluster-reset. For multi-server
+// clusters it follows the RKE2 HA procedure: stop rke2-server on all
+// servers, reset on the bootstrap server, then wipe the etcd db on the
+// remaining servers and start them so they rejoin cleanly.
+// Requires confirm=true (the --yes flag).
 func SnapshotRestore(opts *Options, name string, confirm bool) error {
+	if strings.Contains(name, "/") || strings.Contains(name, "..") {
+		return fmt.Errorf("invalid snapshot name %q", name)
+	}
 	if !confirm {
-		return fmt.Errorf("restore is destructive (etcd cluster-reset on %s); pass --yes to confirm",
-			snapshotDir+"/"+name)
+		return fmt.Errorf("restore is destructive (etcd cluster-reset from %s/%s); pass --yes to confirm",
+			snapshotDir, name)
 	}
 	c, err := cluster.Load(opts.ClusterFile)
 	if err != nil {
 		return err
 	}
-	cl, err := connectFirst(c)
-	if err != nil {
-		return err
+	sshCfg := SSHConfig{
+		User:         c.Spec.SSH.User,
+		Port:         c.Spec.SSH.Port,
+		IdentityFile: c.Spec.SSH.IdentityFile,
+		Sudo:         c.Spec.SSH.Sudo,
 	}
-	defer cl.Close()
 
-	logf(opts, "stopping rke2-server on %s", c.FirstServer().Name)
-	if res, err := cl.RunSudo("systemctl stop rke2-server"); err != nil {
-		return err
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("stop rke2-server: %s", res.Stderr)
+	clients := map[string]*Client{}
+	defer func() {
+		for _, cl := range clients {
+			cl.Close()
+		}
+	}()
+	conn := func(n cluster.Node) (*Client, error) {
+		if cl, ok := clients[n.Name]; ok {
+			return cl, nil
+		}
+		cl, err := Connect(n.Address, sshCfg)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", n.Name, err)
+		}
+		clients[n.Name] = cl
+		return cl, nil
 	}
-	logf(opts, "cluster-reset --cluster-reset-restore-path=%s/%s", snapshotDir, name)
+
+	first := c.FirstServer()
+	// 1. Stop rke2-server on every server node.
+	for _, n := range c.Spec.Servers {
+		cl, err := conn(n)
+		if err != nil {
+			return err
+		}
+		logf(opts, "stopping rke2-server on %s", n.Name)
+		res, err := cl.RunSudo("systemctl stop rke2-server")
+		if err != nil {
+			return fmt.Errorf("%s: %w", n.Name, err)
+		}
+		if res.ExitCode != 0 {
+			return fmt.Errorf("%s: stop rke2-server: %s", n.Name, res.Stderr)
+		}
+	}
+
+	// 2. Cluster-reset on the bootstrap server.
+	cl := clients[first.Name]
+	logf(opts, "cluster-reset --cluster-reset-restore-path=%s/%s on %s", snapshotDir, name, first.Name)
 	res, err := cl.RunSudo(fmt.Sprintf("rke2 server --cluster-reset --cluster-reset-restore-path=%s/%s",
 		snapshotDir, shellQuote(name)))
 	if err != nil {
@@ -130,14 +167,27 @@ func SnapshotRestore(opts *Options, name string, confirm bool) error {
 	if res.ExitCode != 0 {
 		return fmt.Errorf("cluster-reset failed (exit %d): %s", res.ExitCode, tail(res.Stderr+res.Stdout, 800))
 	}
-	logf(opts, "starting rke2-server")
-	res, err = cl.RunSudo("systemctl start rke2-server")
-	if err != nil {
+	if res, err := cl.RunSudo("systemctl start rke2-server"); err != nil {
 		return err
+	} else if res.ExitCode != 0 {
+		return fmt.Errorf("start rke2-server on %s: %s", first.Name, res.Stderr)
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("start rke2-server: %s", res.Stderr)
+
+	// 3. Other servers: wipe etcd db and restart to rejoin.
+	for _, n := range c.Spec.Servers {
+		if n.Name == first.Name {
+			continue
+		}
+		cl := clients[n.Name]
+		logf(opts, "wiping etcd db and restarting %s", n.Name)
+		res, err := cl.RunSudo("rm -rf /var/lib/rancher/rke2/server/db && systemctl start rke2-server")
+		if err != nil {
+			return fmt.Errorf("%s: %w", n.Name, err)
+		}
+		if res.ExitCode != 0 {
+			return fmt.Errorf("%s: wipe+start: %s", n.Name, res.Stderr)
+		}
 	}
-	logf(opts, "restore complete on %s. If the cluster had other servers, rejoin them with `searke apply`.", c.FirstServer().Name)
+	logf(opts, "restore complete; %d server(s) rejoined", len(c.Spec.Servers)-1)
 	return nil
 }

@@ -16,7 +16,7 @@
 | 阶段 3：`validate/plan/apply` | ✅ 代码完成 | SSH/SFTP/preflight/分发/install.sh/编排/幂等续跑全部实现；`validate` 已验证本地路径；多节点实机端到端待验证 |
 | 阶段 4：`status`+生命周期 | ✅ 代码完成 | `status`、etcd snapshot save/list/pull/restore、按 server 先 agent 后的滚动升级均已实现；实机待验证 |
 
-**实现期新增决策：** 开发环境实测 `raw.githubusercontent.com` 与 GitHub Release 资产域名不可达，因此下载器内置主源+镜像回退（install.sh → jsdelivr；release 资产 → gh-proxy.com / ghproxy.net），lock 文件记录实际生效 URL。镜像只作为传输通道，完整性仍由上游 sha256sum 清单保证。
+**实现期新增决策：** 开发环境实测 `raw.githubusercontent.com` 与 GitHub Release 资产域名间歇不可达。下载器采用**信任锚模型**：先经 `api.github.com` 读取 release 元数据（兼作"tag 与资产存在"预检）；sha256sum 清单与 `install.sh` 只从 GitHub 控制端点获取（Release 资产 API / contents API），绝不走第三方镜像；大体积制品允许经 gh-proxy.com / ghproxy.net 传输，但全部按受信清单校验 SHA256。连接级超时 10s、响应头 30s、body 停滞 45s 即切换候选并断点续传。全部下载先入临时目录，校验通过后整体原子替换输出目录。
 
 ## 1. 背景与目标
 

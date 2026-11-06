@@ -130,11 +130,16 @@ func newClusterCmds() []*cobra.Command {
 		Short: "Show recorded apply state and live node status",
 		RunE:  func(cmd *cobra.Command, args []string) error { return runStatus(file) },
 	}
+	var skipDrain, skipSnapshot bool
 	upgrade := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Rolling upgrade to the bundle version (servers first, then agents)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return runUpgrade(cmd.Context(), file) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runUpgrade(cmd.Context(), file, skipDrain, skipSnapshot)
+		},
 	}
+	upgrade.Flags().BoolVar(&skipDrain, "skip-drain", false, "do not cordon/drain nodes during upgrade")
+	upgrade.Flags().BoolVar(&skipSnapshot, "skip-snapshot", false, "do not take a pre-upgrade etcd snapshot")
 	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade} {
 		flag(c)
 	}

@@ -138,17 +138,15 @@ func (c *Cluster) Validate() error {
 				return fmt.Errorf("node name %q used by both %s and %s", n.Name, prev, list.role)
 			}
 			names[n.Name] = list.role
-			if net.ParseIP(n.Address) == nil {
-				if _, err := net.LookupHost(n.Address); err != nil {
-					return fmt.Errorf("%s %s: cannot resolve address %q: %w", list.role, n.Name, n.Address, err)
-				}
-			}
+			// DNS resolution is intentionally not checked here: validate
+			// must stay fast and work fully offline; unreachable or
+			// unresolvable addresses surface during the SSH phase.
 		}
 	}
 	if c.Spec.RKE2Config != nil {
-		for _, k := range []string{"server", "token", "node-name"} {
+		for _, k := range []string{"server", "token", "node-name", "cni"} {
 			if _, bad := c.Spec.RKE2Config[k]; bad {
-				return fmt.Errorf("spec.rke2Config.%s is managed by searke and must not be set", k)
+				return fmt.Errorf("spec.rke2Config.%s is managed by searke and must not be set (use spec.rke2.cni)", k)
 			}
 		}
 	}

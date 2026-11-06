@@ -117,8 +117,13 @@ func (s *State) Save() error {
 	return os.WriteFile(s.path, data, 0o600)
 }
 
-// Mark records a node's completed stage and saves.
+// Mark records a node's completed stage and saves. Stages are
+// monotonic: marking an earlier stage than the recorded one is a no-op,
+// so an interrupted apply never loses resume progress.
 func (s *State) Mark(node, role, arch, stage, detail string) error {
+	if cur, ok := s.Nodes[node]; ok && stageIndex(cur.Stage) > stageIndex(stage) {
+		return nil
+	}
 	s.Nodes[node] = NodeState{Role: role, Arch: arch, Stage: stage, Updated: time.Now().UTC(), Detail: detail}
 	return s.Save()
 }

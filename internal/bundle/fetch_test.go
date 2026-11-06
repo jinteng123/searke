@@ -3,6 +3,8 @@ package bundle
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +15,10 @@ import (
 	"testing"
 )
 
-// fakeRelease serves the minimal set of files Fetch needs.
+// fakeRelease serves the minimal set of files Fetch needs, including
+// the release-metadata endpoint and API fallbacks. It deliberately
+// does NOT serve sha256sum-arm64.txt or install.sh on their primary
+// URLs so the test exercises the API fallback path.
 func fakeRelease(t *testing.T) *httptest.Server {
 	t.Helper()
 	tag := EscapedTag("v1.36.5+rke2r1")
@@ -33,16 +38,43 @@ func fakeRelease(t *testing.T) *httptest.Server {
 		}
 		files["sha256sum-"+arch+".txt"] = []byte(sums)
 	}
+	var srvURL string // set after NewServer; handlers read it at request time
+
+	// primary release-asset URLs (arm64 sum intentionally absent)
 	for name, body := range files {
+		if name == "sha256sum-arm64.txt" {
+			continue // only reachable via the API fallback
+		}
 		n, b := name, body
 		mux.HandleFunc("/releases/download/"+tag+"/"+n, func(w http.ResponseWriter, r *http.Request) {
 			w.Write(b)
 		})
 	}
-	mux.HandleFunc("/"+tag+"/install.sh", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("#!/bin/sh\n"))
+	// API: release metadata
+	mux.HandleFunc("/releases/tags/"+tag, func(w http.ResponseWriter, r *http.Request) {
+		var assets []map[string]string
+		for name := range files {
+			assets = append(assets, map[string]string{
+				"name": name,
+				"url":  srvURL + "/releases/assets/" + name,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"tag_name": "v1.36.5+rke2r1", "assets": assets})
+	})
+	// API: raw asset bytes
+	mux.HandleFunc("/releases/assets/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/releases/assets/")
+		w.Write(files[name])
+	})
+	// API: contents (install.sh fallback)
+	mux.HandleFunc("/contents/install.sh", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{
+			"encoding": "base64",
+			"content":  base64.StdEncoding.EncodeToString([]byte("#!/bin/sh\ntrue\n")),
+		})
 	})
 	srv := httptest.NewServer(mux)
+	srvURL = srv.URL
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -54,19 +86,24 @@ func testBundle() *Bundle {
 	}}
 }
 
-func TestFetchEndToEnd(t *testing.T) {
-	srv := fakeRelease(t)
-	oldBase, oldRaw, oldMirrors := ReleaseBase, RawBase, ScriptMirrors
-	defer func() { ReleaseBase, RawBase, ScriptMirrors = oldBase, oldRaw, oldMirrors }()
+func stubBases(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	oldR, oldRaw, oldAPI, oldMirrors := ReleaseBase, RawBase, APIBase, ReleaseMirrors
+	t.Cleanup(func() { ReleaseBase, RawBase, APIBase, ReleaseMirrors = oldR, oldRaw, oldAPI, oldMirrors })
 	ReleaseBase = srv.URL
 	RawBase = srv.URL
-	ScriptMirrors = nil
+	APIBase = srv.URL
+	ReleaseMirrors = nil
+}
+
+func TestFetchEndToEnd(t *testing.T) {
+	srv := fakeRelease(t)
+	stubBases(t, srv)
 
 	out := filepath.Join(t.TempDir(), "bundle")
 	if err := Fetch(context.Background(), testBundle(), FetchOptions{OutputDir: out}); err != nil {
 		t.Fatal(err)
 	}
-	// layout
 	for _, p := range []string{
 		"bundle.yaml", "bundle.lock.yaml", "install.sh",
 		"payload/linux-amd64/rke2.linux-amd64.tar.gz",
@@ -80,7 +117,6 @@ func TestFetchEndToEnd(t *testing.T) {
 			t.Errorf("missing %s", p)
 		}
 	}
-	// lock file records URLs + hashes
 	lock, err := LoadLock(out)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +124,15 @@ func TestFetchEndToEnd(t *testing.T) {
 	if lock.Spec.Version != "v1.36.5+rke2r1" || len(lock.Spec.Assets) != 7 {
 		t.Fatalf("bad lock: %+v", lock.Spec)
 	}
-	// re-verify passes
+	// install.sh must have come through the contents API fallback
+	for _, a := range lock.Spec.Assets {
+		if a.Name == "install.sh" && !strings.Contains(a.URL, "/contents/") {
+			t.Fatalf("install.sh fetched from %s, want contents API fallback", a.URL)
+		}
+		if a.Name == "sha256sum-arm64.txt" && !strings.Contains(a.URL, "/releases/assets/") {
+			t.Fatalf("arm64 sum fetched from %s, want API asset fallback", a.URL)
+		}
+	}
 	if _, err := VerifyBundleDir(out); err != nil {
 		t.Fatalf("re-verify: %v", err)
 	}
@@ -96,23 +140,31 @@ func TestFetchEndToEnd(t *testing.T) {
 
 func TestFetchFailsOnMissingAsset(t *testing.T) {
 	srv := fakeRelease(t)
-	oldBase, oldRaw, oldMirrors := ReleaseBase, RawBase, ScriptMirrors
-	defer func() { ReleaseBase, RawBase, ScriptMirrors = oldBase, oldRaw, oldMirrors }()
-	ReleaseBase = srv.URL
-	RawBase = srv.URL
-	ScriptMirrors = nil
+	stubBases(t, srv)
 
 	b := testBundle()
-	// break one asset: server has no cilium images
 	b.Spec.CNI = "cilium"
 	out := filepath.Join(t.TempDir(), "bundle")
 	err := Fetch(context.Background(), b, FetchOptions{OutputDir: out, Retries: 1})
 	if err == nil {
 		t.Fatal("missing cilium assets must fail")
 	}
-	// no lock must be written
-	if _, err := os.Stat(filepath.Join(out, LockFileName)); !os.IsNotExist(err) {
-		t.Fatal("failed fetch must not leave a lock file")
+	// nothing may be left in the output dir
+	entries, _ := os.ReadDir(out)
+	if len(entries) != 0 {
+		t.Fatalf("failed fetch left files in output dir: %v", entries)
+	}
+}
+
+func TestFetchRefusesNonBundleDir(t *testing.T) {
+	srv := fakeRelease(t)
+	stubBases(t, srv)
+	out := t.TempDir()
+	if err := os.WriteFile(filepath.Join(out, "unrelated.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Fetch(context.Background(), testBundle(), FetchOptions{OutputDir: out}); err == nil {
+		t.Fatal("fetch must refuse to clobber a non-bundle directory")
 	}
 }
 
@@ -134,10 +186,10 @@ func TestFetchResumes(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
+	stubBases(t, srv)
 
 	opts := FetchOptions{Client: srv.Client(), Retries: 1}
 	tmp := filepath.Join(t.TempDir(), "f.part")
-	// pre-seed a partial file to exercise the Range path
 	if err := os.WriteFile(tmp, body[:10], 0o644); err != nil {
 		t.Fatal(err)
 	}

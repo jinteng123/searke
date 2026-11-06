@@ -36,7 +36,7 @@ func runImageBuild(bundleDir, tag, outDir string) error {
 	if outDir == "" {
 		outDir = strings.TrimSuffix(bundleDir, "/") + "-oci"
 	}
-	meta, err := ociimg.Build(bundleDir, outDir)
+	meta, err := ociimg.Build(bundleDir, outDir, tag)
 	if err != nil {
 		return err
 	}
@@ -110,8 +110,11 @@ func runStatus(file string) error {
 	return deploy.Status(deployOpts(file))
 }
 
-func runUpgrade(ctx context.Context, file string) error {
-	return deploy.Upgrade(ctx, deployOpts(file))
+func runUpgrade(ctx context.Context, file string, skipDrain, skipSnapshot bool) error {
+	return deploy.Upgrade(ctx, deployOpts(file), deploy.UpgradeOptions{
+		SkipDrain:    skipDrain,
+		SkipSnapshot: skipSnapshot,
+	})
 }
 
 func runSnapshotSave(file, name string) error {

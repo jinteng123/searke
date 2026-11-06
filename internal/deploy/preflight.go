@@ -20,8 +20,9 @@ type PreflightReport struct {
 	ConfigExists     bool
 	ExistingURL      string // server: line in existing config.yaml, if any
 	InstalledVersion string // rke2 --version, if installed
-	DiskAvailKiB     int64  // on /var/lib/rancher (or /)
+	DiskAvailKiB     int64  // on the /var/lib filesystem
 	HasRoute         bool
+	Warnings         []string
 }
 
 // Platform converts the discovered arch into a bundle platform.
@@ -64,12 +65,23 @@ func Preflight(c *Client, nodeName string) (*PreflightReport, error) {
 			rep.OS, rep.OSVersion = f[0], f[1]
 		}
 	}
-
-	if _, err := c.RunSudo("true"); err != nil {
-		return nil, fmt.Errorf("%s: passwordless sudo required (or spec.ssh.user=root): %w", nodeName, err)
+	// Scope for the first release is Ubuntu 22.04 (per the dev plan).
+	if rep.OS != "ubuntu" {
+		return nil, fmt.Errorf("%s: unsupported OS %q; this release supports Ubuntu 22.04 only", nodeName, rep.OS)
+	}
+	if rep.OSVersion != "22.04" {
+		rep.Warnings = append(rep.Warnings,
+			fmt.Sprintf("Ubuntu %s is not the validated version (22.04); proceeding anyway", rep.OSVersion))
 	}
 
-	df, err := mustOK(c.RunSudo("mkdir -p /var/lib/rancher && df -P -k /var/lib/rancher | tail -1"))
+	res, err := c.RunSudo("true")
+	if err != nil || res.ExitCode != 0 {
+		return nil, fmt.Errorf("%s: passwordless sudo required (or spec.ssh.user=root)", nodeName)
+	}
+
+	// Disk check is read-only: pick the deepest existing ancestor.
+	df, err := mustOK(c.Run(
+		"for d in /var/lib/rancher /var/lib /var /; do [ -d \"$d\" ] && df -P -k \"$d\" | tail -1 && break; done"))
 	if err == nil {
 		f := strings.Fields(df)
 		if len(f) >= 4 {
@@ -80,9 +92,8 @@ func Preflight(c *Client, nodeName string) (*PreflightReport, error) {
 		return nil, fmt.Errorf("%s: insufficient disk on /var/lib/rancher (%d KiB free, need >= 3 GiB)", nodeName, rep.DiskAvailKiB)
 	}
 
-	if _, err := c.Run("ip route show default | grep -q default"); err == nil {
-		rep.HasRoute = true
-	}
+	route, err := c.Run("ip route show default")
+	rep.HasRoute = err == nil && route.ExitCode == 0 && strings.Contains(route.Stdout, "default")
 	if !rep.HasRoute {
 		return nil, fmt.Errorf("%s: no default route configured", nodeName)
 	}
@@ -112,6 +123,16 @@ func Preflight(c *Client, nodeName string) (*PreflightReport, error) {
 		// "rke2 version v1.36.5+rke2r1 (rev abc)"
 		if f := strings.Fields(strings.TrimSpace(r.Stdout)); len(f) >= 3 {
 			rep.InstalledVersion = f[2]
+		}
+	}
+
+	// Required ports must be free on a fresh node. On a node that already
+	// runs rke2, occupied ports are expected.
+	if rep.Service == "" {
+		if r, _ := c.Run(`ss -tulnH | awk '{print $5}' | grep -E ':(6443|9345|10250|8472)$'`); r != nil {
+			if used := strings.TrimSpace(r.Stdout); used != "" {
+				return nil, fmt.Errorf("%s: required ports already in use: %s", nodeName, used)
+			}
 		}
 	}
 	return rep, nil

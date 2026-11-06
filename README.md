@@ -16,9 +16,9 @@ go build -o searke ./cmd/searke
 
 | 命令 | 状态 | 说明 |
 | --- | --- | --- |
-| `searke bundle fetch -f bundle.yaml -o <dir>` | ✅ 已实现并真实验证 | 按 bundle.yaml 从 GitHub Release 下载制品，断点续传、失败重试、主源不可达时自动切换镜像（jsdelivr / gh-proxy），全部文件经上游 SHA256 校验后生成 `bundle.lock.yaml` |
+| `searke bundle fetch -f bundle.yaml -o <dir>` | ✅ 已实现并真实验证 | 按 bundle.yaml 下载制品：先经 GitHub API 确认 release 元数据；sha256sum 清单与 install.sh（信任锚）只从 GitHub 控制的端点获取（Release API / contents API），大文件可经第三方镜像传输但一律按受信清单验哈希；断点续传、停滞检测、原子化落盘，产物记录 `bundle.lock.yaml` |
 | `searke bundle verify <dir>` | ✅ 已实现 | 重新校验已有 bundle：必需文件存在 + 哈希一致；manifest 中未下载的可选资产忽略 |
-| `searke image build <dir> -o <oci-dir>` | ✅ 已实现并真实验证 | 按平台各建一个子镜像，产出 OCI Image Index（OCI Image Layout），标注 `os`/`arch`/`io.searke.rke2.version`/`io.searke.cni` |
+| `searke image build <dir> -o <oci-dir>` | ✅ 已实现并真实验证 | 按平台各建一个子镜像，产出 OCI Image Index；纯 OCI media type（manifest/config/zstd 层）、固定时间戳可复现构建、`--tag` 写入 `image.ref.name` 注解 |
 | `searke image push <ref> --from <oci-dir>` | ✅ 已实现 | `remote.WriteIndex` 推送整个 index，使用默认 docker keychain 认证 |
 | `searke image save <ref-or-dir> -o <tar>` | ✅ 已实现并真实验证 | 导出为含 OCI Layout 的 tar 归档（离线搬运） |
 | `searke image load <tar> -o <oci-dir>` | ✅ 已实现并真实验证 | 导入本地归档，还原 OCI Layout |
@@ -26,8 +26,8 @@ go build -o searke ./cmd/searke
 | `searke plan -f cluster.yaml` | ✅ 已实现 | validate 之上列出每个节点将执行的动作，不做远端变更 |
 | `searke apply -f cluster.yaml` | ✅ 已实现 | 分阶段安装：preflight → 按节点架构分发 payload → 写 config.yaml → install.sh → 首 server → 其他 server → agent → Ready；阶段落盘可断点续跑，已属其他集群的节点会拒绝重置 |
 | `searke status -f cluster.yaml` | ✅ 已实现 | 读取本地 apply 状态 + 从首 server 拉取 `kubectl get nodes` 实时视图 |
-| `searke upgrade -f cluster.yaml` | ✅ 已实现 | 滚动升级：server 逐台先于 agent；分发新 payload → 重跑 install.sh → 重启服务 → 等 Ready；`apply` 检测到版本漂移会引导改用本命令 |
-| `searke snapshot save/list/pull/restore` | ✅ 已实现 | etcd 快照工作流：首 server 上 `rke2 etcd-snapshot save`、列举、SFTP/`sudo cat` 拉回本地、cluster-reset 恢复（需 `--yes`，其余 server 需经 apply 重入） |
+| `searke upgrade -f cluster.yaml` | ✅ 已实现 | 滚动升级：server 逐台先于 agent；升级前自动 etcd 快照 + drain/uncordon（可 `--skip-*` 关闭）；拒绝降级与跨 minor 跳跃；`apply` 检测到版本漂移会引导改用本命令 |
+| `searke snapshot save/list/pull/restore` | ✅ 已实现 | etcd 快照工作流：首 server 上 `rke2 etcd-snapshot save`、列举、拉回本地；restore 按 RKE2 HA 流程停全部 server → 首 server cluster-reset → 其余 server 清 db 重入（需 `--yes`） |
 
 ## 快速流程
 
@@ -99,6 +99,7 @@ rke2-bundle/
 
 ## 安全约定
 
+- **信任锚模型**：sha256sum 清单与 install.sh 只从 GitHub 控制端点（github.com / raw.githubusercontent.com / api.github.com）获取；第三方镜像只传大文件且必须过受信清单的 SHA256 校验，清单本身绝不走镜像
 - OCI 镜像内不含 SSH 私钥、集群 token、kubeconfig
 - token 仅经 SSH 在内存中传递，不写入日志和状态文件
 - 状态文件 `.searke/state-<cluster>.json` 权限 0600
@@ -125,7 +126,7 @@ verify + build + save + load 全部通过。
 
 ## 故障排查
 
-- **下载卡死/i/o timeout**：GitHub Release 与 raw 域名在部分网络不可达。下载器对每个资产按 主源 → gh-proxy.com → ghproxy.net 轮换重试；全部失败时错误会列出尝试过的 URL。`bundle.lock.yaml` 记录实际生效的源。
+- **下载卡死/慢速连接**：大文件候选顺序为 GitHub → gh-proxy.com → ghproxy.net，连接级超时 10s、停滞 45s 即切换下一候选并断点续传。信任锚文件（sha256sum、install.sh）不走镜像，只回退到 api.github.com。`bundle.lock.yaml` 记录实际生效 URL。
 - **`sha256 mismatch`**：上游清单与文件不符（串包或损坏）。删除对应文件重跑 fetch；校验未过不会生成镜像。
 - **SSH dial 失败/known_hosts**：节点必须已在 `~/.ssh/known_hosts`（先手动 `ssh` 一次或 `ssh-keyscan`）；密钥需无密码或在 ssh-agent 中。
 - **`passwordless sudo required`**：`spec.ssh.sudo: true` 时要求 `sudo -n` 可用；否则用 root 用户。
@@ -137,6 +138,5 @@ verify + build + save + load 全部通过。
 
 - `image push` 代码已实现但未在真实 registry 验证
 - `apply`/`plan`/`upgrade`/`snapshot`/`status` 已实现完整逻辑，尚无真实多节点环境端到端验证
-- `snapshot restore` 仅覆盖首 server 的 cluster-reset；其余 server 需 `apply` 重入
-- 首期节点 OS 限定 Ubuntu 22.04 由 preflight 检查
+- 首期节点 OS 限定 Ubuntu（22.04 为验证版本；preflight 强制 Ubuntu，非 22.04 仅警告）
 - 节点增删、CNI profile 扩展未做（计划明确缓议）

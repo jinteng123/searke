@@ -59,7 +59,7 @@ func TestAssetsForCNI(t *testing.T) {
 	for _, a := range canal {
 		names = append(names, a.Name)
 	}
-	want := []string{"rke2.linux-amd64.tar.gz", "sha256sum-amd64.txt", "rke2-images.linux-amd64.tar.zst"}
+	want := []string{"sha256sum-amd64.txt", "rke2.linux-amd64.tar.gz", "rke2-images.linux-amd64.tar.zst"}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("canal assets = %v, want %v", names, want)
 	}

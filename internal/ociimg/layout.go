@@ -240,7 +240,7 @@ func LoadTar(tarPath, outDir string) error {
 	if _, err := layout.ImageIndexFromPath(tmp); err != nil {
 		return fmt.Errorf("%s does not contain a valid OCI image layout: %w", tarPath, err)
 	}
-	if err := os.RemoveAll(outDir); err != nil {
+	if err := prepareLayoutDir(outDir); err != nil {
 		return err
 	}
 	return copyDir(tmp, outDir)
@@ -353,7 +353,7 @@ func PullToLayout(refStr, outDir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(outDir); err != nil {
+	if err := prepareLayoutDir(outDir); err != nil {
 		return err
 	}
 	_, err = layout.Write(outDir, ii)

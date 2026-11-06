@@ -56,7 +56,7 @@ spec:
 func TestBuildAndExtractRoundTrip(t *testing.T) {
 	src := makeBundleDir(t, "v1.36.5+rke2r1", "amd64", "arm64")
 	out := filepath.Join(t.TempDir(), "oci")
-	meta, err := Build(src, out)
+	meta, err := Build(src, out, "")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestBuildAndExtractRoundTrip(t *testing.T) {
 func TestSaveLoadRoundTrip(t *testing.T) {
 	src := makeBundleDir(t, "v1.36.5+rke2r1", "amd64")
 	layoutDir := filepath.Join(t.TempDir(), "oci")
-	if _, err := Build(src, layoutDir); err != nil {
+	if _, err := Build(src, layoutDir, ""); err != nil {
 		t.Fatal(err)
 	}
 	s := Source{Path: layoutDir}
@@ -140,6 +140,51 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if m.Version != "v1.36.5+rke2r1" {
 		t.Fatalf("loaded meta: %+v", m)
+	}
+}
+
+func TestBuildReproducible(t *testing.T) {
+	src := makeBundleDir(t, "v1.36.5+rke2r1", "amd64")
+	m1, err := Build(src, filepath.Join(t.TempDir(), "a"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := Build(src, filepath.Join(t.TempDir(), "b"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, d := range m1.Digests {
+		if m2.Digests[p] != d {
+			t.Fatalf("%s: digests differ across builds: %s vs %s", p, d, m2.Digests[p])
+		}
+	}
+}
+
+func TestPrepareLayoutDir(t *testing.T) {
+	// refuses non-empty non-layout dir
+	d := t.TempDir()
+	if err := os.WriteFile(filepath.Join(d, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareLayoutDir(d); err == nil {
+		t.Fatal("must refuse non-layout dir")
+	}
+	if _, err := os.Stat(filepath.Join(d, "keep.txt")); err != nil {
+		t.Fatal("file was deleted despite refusal")
+	}
+	// allows existing layout dir
+	if err := os.WriteFile(filepath.Join(d, "oci-layout"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareLayoutDir(d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d); err != nil {
+		t.Fatal("dir removed")
+	}
+	// creates missing dir
+	if err := prepareLayoutDir(filepath.Join(d, "new")); err != nil {
+		t.Fatal(err)
 	}
 }
 

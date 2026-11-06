@@ -12,29 +12,32 @@ var ReleaseBase = "https://github.com/rancher/rke2"
 // RawBase serves repo files at a tag (install.sh).
 var RawBase = "https://raw.githubusercontent.com/rancher/rke2"
 
-// ScriptMirrors are fallback URLs for install.sh used when the primary
-// raw.githubusercontent.com source is unreachable. All mirrors serve
-// the identical file from the pinned git tag; the fetched content is
-// hashed into bundle.lock.yaml either way.
-var ScriptMirrors = []string{
-	"https://cdn.jsdelivr.net/gh/rancher/rke2@%s/install.sh",
-}
+// APIBase is the GitHub REST API root for the repo. API endpoints are
+// the ONLY allowed fallback for trust-anchor files (checksum manifests
+// and install.sh): they are served over TLS by GitHub itself, so a
+// compromised mirror cannot forge matching checksums.
+var APIBase = "https://api.github.com/repos/rancher/rke2"
 
 // ReleaseMirrors wrap a full GitHub release asset URL (%s = the
-// primary URL). They serve byte-identical release artifacts; the
-// upstream sha256sum manifest still gates every download.
+// primary URL). Mirrors only ever serve the large binary/image
+// payloads, never the checksum manifests or install.sh: those must
+// come from GitHub-controlled endpoints, and every mirrored byte is
+// verified against the trusted manifest before use.
 var ReleaseMirrors = []string{
 	"https://gh-proxy.com/%s",
 	"https://ghproxy.net/%s",
 }
 
-// mirrorCandidates returns url plus its wrapped mirror URLs.
-func mirrorCandidates(url string) []string {
-	out := []string{url}
-	for _, tmpl := range ReleaseMirrors {
-		out = append(out, fmt.Sprintf(tmpl, url))
-	}
-	return out
+
+// apiContentsURL fetches a repo file through the GitHub contents API.
+// The JSON response carries base64 content — downloadOnce decodes it.
+func apiContentsURL(version, path string) string {
+	return fmt.Sprintf("%s/contents/%s?ref=%s", APIBase, path, EscapedTag(version))
+}
+
+// apiReleaseURL returns the release metadata endpoint for the tag.
+func apiReleaseURL(version string) string {
+	return fmt.Sprintf("%s/releases/tags/%s", APIBase, EscapedTag(version))
 }
 
 // EscapedTag returns the release tag with '+' percent-encoded, as required
@@ -49,13 +52,14 @@ func InstallScriptURL(version string) string {
 	return RawBase + "/" + EscapedTag(version) + "/install.sh"
 }
 
-// InstallScriptURLs returns the primary URL followed by mirror URLs.
+// InstallScriptURLs returns the raw URL followed by the trusted
+// contents-API fallback. No third-party mirrors: install.sh runs as
+// root on every node.
 func InstallScriptURLs(version string) []string {
-	urls := []string{InstallScriptURL(version)}
-	for _, tmpl := range ScriptMirrors {
-		urls = append(urls, fmt.Sprintf(tmpl, EscapedTag(version)))
+	return []string{
+		InstallScriptURL(version),
+		apiContentsURL(version, "install.sh"),
 	}
-	return urls
 }
 
 // releaseURL builds the release asset URL for a file name.
@@ -71,6 +75,10 @@ type Asset struct {
 	// URLs lists mirror candidates; the first is primary. When empty,
 	// URL is used alone.
 	URLs []string
+	// TrustAnchor marks files that establish integrity for everything
+	// else (checksum manifests, install.sh). They may only be fetched
+	// from GitHub-controlled endpoints — never third-party mirrors.
+	TrustAnchor bool
 	// Required reports whether a missing asset is fatal.
 	Required bool
 }
@@ -88,28 +96,27 @@ func (a Asset) Candidates() []string {
 // need rke2-images-core plus the CNI-specific archive.
 func AssetsFor(version, cni string, p Platform) []Asset {
 	arch := p.Arch
-	mk := func(name string) Asset {
-		u := releaseURL(version, name)
+	mk := func(name string, anchor bool) Asset {
 		return Asset{
-			Name:     name,
-			Platform: p.String(),
-			URL:      u,
-			URLs:     mirrorCandidates(u),
-			Required: true,
+			Name:        name,
+			Platform:    p.String(),
+			URL:         releaseURL(version, name),
+			TrustAnchor: anchor,
+			Required:    true,
 		}
 	}
 	assets := []Asset{
-		mk(fmt.Sprintf("rke2.linux-%s.tar.gz", arch)),
-		mk(fmt.Sprintf("sha256sum-%s.txt", arch)),
+		mk(fmt.Sprintf("sha256sum-%s.txt", arch), true),
+		mk(fmt.Sprintf("rke2.linux-%s.tar.gz", arch), false),
 	}
 	if cni == "canal" {
-		assets = append(assets, mk(fmt.Sprintf("rke2-images.linux-%s.tar.zst", arch)))
+		assets = append(assets, mk(fmt.Sprintf("rke2-images.linux-%s.tar.zst", arch), false))
 	} else {
 		for _, name := range []string{
 			fmt.Sprintf("rke2-images-core.linux-%s.tar.zst", arch),
 			fmt.Sprintf("rke2-images-%s.linux-%s.tar.zst", cni, arch),
 		} {
-			assets = append(assets, mk(name))
+			assets = append(assets, mk(name, false))
 		}
 	}
 	return assets
@@ -118,10 +125,11 @@ func AssetsFor(version, cni string, p Platform) []Asset {
 // SharedAssets lists non-platform files (the installer).
 func SharedAssets(version string) []Asset {
 	return []Asset{{
-		Name:     "install.sh",
-		URL:      InstallScriptURL(version),
-		URLs:     InstallScriptURLs(version),
-		Required: true,
+		Name:        "install.sh",
+		URL:         InstallScriptURL(version),
+		URLs:        InstallScriptURLs(version),
+		TrustAnchor: true,
+		Required:    true,
 	}}
 }
 

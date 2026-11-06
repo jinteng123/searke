@@ -3,12 +3,14 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"gopkg.in/yaml.v3"
 
 	"github.com/jint/searke/internal/bundle"
@@ -37,9 +39,12 @@ type Options struct {
 	Log         func(format string, args ...any)
 }
 
-// ResolvedBundle pairs the opened index with its metadata.
+// ResolvedBundle pairs the opened index with its metadata. The index
+// stays open for the whole run so each node doesn't re-unpack a local
+// .oci.tar.
 type ResolvedBundle struct {
 	Source ociimg.Source
+	II     v1.ImageIndex
 	Meta   *ociimg.Meta
 	Close  func()
 }
@@ -89,7 +94,7 @@ func loadAndResolve(opts *Options) (*cluster.Cluster, *ResolvedBundle, error) {
 		cleanup()
 		return nil, nil, fmt.Errorf("cluster requires cni %s but bundle was built for %s", cni, meta.CNI)
 	}
-	return c, &ResolvedBundle{Source: src, Meta: meta, Close: func() { cleanup() }}, nil
+	return c, &ResolvedBundle{Source: src, II: ii, Meta: meta, Close: cleanup}, nil
 }
 
 func stateDir(opts *Options) string {
@@ -124,6 +129,9 @@ func connectAll(c *cluster.Cluster, opts *Options) ([]*nodeRuntime, error) {
 		if err != nil {
 			cl.Close()
 			return nil, err
+		}
+		for _, w := range rep.Warnings {
+			logf(opts, "  warning %s: %s", n.Name, w)
 		}
 		if prev, dup := hostnames[rep.Hostname]; dup {
 			return nil, fmt.Errorf("nodes %s and %s share hostname %q; hostnames must be unique", prev, n.Name, rep.Hostname)
@@ -244,12 +252,21 @@ func Apply(ctx context.Context, opts *Options) error {
 	}
 
 	logf(opts, "== phase 2: distribute payloads ==")
+	scratch, err := os.MkdirTemp("", "searke-payload-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(scratch)
+	payloadDirs := map[bundle.Platform]string{}
 	for _, r := range rts {
-		if st.Done(r.node.Name, StageDistributed) {
+		if r.report.Service != "" && r.report.ServiceState == "active" {
+			continue // healthy node needs no new payload
+		}
+		if st.Done(r.node.Name, StageDistributed) && remotePayloadOK(r) {
 			logf(opts, "  %s: already distributed, skipping", r.node.Name)
 			continue
 		}
-		if err := distribute(ctx, c, rb, r, opts); err != nil {
+		if err := distribute(ctx, c, rb, r, scratch, payloadDirs, opts); err != nil {
 			return err
 		}
 		if err := st.Mark(r.node.Name, r.role, r.report.Arch, StageDistributed, "payload uploaded"); err != nil {
@@ -324,56 +341,61 @@ func nodeNames(rts []*nodeRuntime) map[string]string {
 	return m
 }
 
-// distribute extracts the platform payload locally and uploads it.
-func distribute(ctx context.Context, c *cluster.Cluster, rb *ResolvedBundle, r *nodeRuntime, opts *Options) error {
+// remotePayloadOK checks whether the artifacts actually still exist on
+// the node — local state alone is not trusted.
+func remotePayloadOK(r *nodeRuntime) bool {
+	p, err := r.report.Platform()
+	if err != nil {
+		return false
+	}
+	check := fmt.Sprintf("test -f %s/install.sh && test -f %s/rke2.linux-%s.tar.gz",
+		RemoteRoot, RemoteArtifacts, p.Arch)
+	res, err := r.client.RunSudo(check)
+	return err == nil && res.ExitCode == 0
+}
+
+// distribute extracts the platform payload locally (once per platform,
+// cached under scratch) and uploads it.
+func distribute(ctx context.Context, c *cluster.Cluster, rb *ResolvedBundle, r *nodeRuntime,
+	scratch string, cache map[bundle.Platform]string, opts *Options) error {
 	p, err := r.report.Platform()
 	if err != nil {
 		return err
 	}
-	logf(opts, "  %s: extract %s payload from bundle", r.node.Name, p)
 
-	ii, cleanup, err := rb.Source.OpenIndex()
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
-	tmp, err := os.MkdirTemp("", "searke-payload-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmp)
-	if err := ociimg.ExtractPayload(ii, p, tmp); err != nil {
-		return fmt.Errorf("%s: %w", r.node.Name, err)
-	}
-	// Verify payload before shipping it to the node.
-	cni := rb.Meta.CNI
-	if cni == "" {
-		cni = "canal"
-	}
-	payloadDir := filepath.Join(tmp, "opt", "searke", "payload")
-	if err := bundle.VerifyPlatform(payloadDir, cni, p); err != nil {
-		return fmt.Errorf("%s: extracted payload failed verification: %w", r.node.Name, err)
+	payloadDir, ok := cache[p]
+	if !ok {
+		logf(opts, "  extracting %s payload from bundle", p)
+		tmp := filepath.Join(scratch, p.DirName())
+		if err := ociimg.ExtractPayload(rb.II, p, tmp); err != nil {
+			return fmt.Errorf("%s: %w", r.node.Name, err)
+		}
+		payloadDir = filepath.Join(tmp, "opt", "searke")
+		// Verify payload once before shipping it to any node.
+		cni := rb.Meta.CNI
+		if cni == "" {
+			cni = "canal"
+		}
+		if err := bundle.VerifyPlatform(payloadDir+"/payload", cni, p); err != nil {
+			return fmt.Errorf("extracted %s payload failed verification: %w", p, err)
+		}
+		cache[p] = payloadDir
 	}
 
 	if err := r.client.PrepareStaging(); err != nil {
 		return fmt.Errorf("%s: %w", r.node.Name, err)
 	}
-	for _, pair := range [][2]string{
-		{filepath.Join(tmp, "opt", "searke", "install.sh"), RemoteRoot + "/install.sh"},
-	} {
-		logf(opts, "  %s: upload %s", r.node.Name, filepath.Base(pair[0]))
-		if err := r.client.UploadFile(pair[0], pair[1], 0o755); err != nil {
-			return fmt.Errorf("%s: upload: %w", r.node.Name, err)
-		}
+	logf(opts, "  %s: upload install.sh", r.node.Name)
+	if err := r.client.UploadFile(payloadDir+"/install.sh", RemoteRoot+"/install.sh", 0o755); err != nil {
+		return fmt.Errorf("%s: upload: %w", r.node.Name, err)
 	}
-	files, err := bundle.Summarize(payloadDir)
+	files, err := bundle.Summarize(payloadDir + "/payload")
 	if err != nil {
 		return err
 	}
 	for _, name := range files {
 		logf(opts, "  %s: upload %s", r.node.Name, name)
-		if err := r.client.UploadFile(filepath.Join(payloadDir, name), RemoteArtifacts+"/"+name, 0o644); err != nil {
+		if err := r.client.UploadFile(filepath.Join(payloadDir, "payload", name), RemoteArtifacts+"/"+name, 0o644); err != nil {
 			return fmt.Errorf("%s: upload %s: %w", r.node.Name, name, err)
 		}
 	}
@@ -393,21 +415,70 @@ func renderConfig(c *cluster.Cluster, n cluster.Node, role, regURL, token string
 	m["cni"] = cni
 	m["node-name"] = n.Name
 	if isFirst {
-		m["tls-san"] = []string{c.RegistrationHost()}
-		m["write-kubeconfig-mode"] = "0600"
+		// tls-san: registration + API hosts, merged with any user list.
+		sans := map[string]bool{c.RegistrationHost(): true}
+		if h := apiHost(c); h != "" {
+			sans[h] = true
+		}
+		var list []string
+		if v, ok := m["tls-san"]; ok {
+			for _, s := range toStringSlice(v) {
+				list = append(list, s)
+				delete(sans, s)
+			}
+		}
+		for s := range sans {
+			list = append(list, s)
+		}
+		sort.Strings(list)
+		m["tls-san"] = list
+		if _, ok := m["write-kubeconfig-mode"]; !ok {
+			m["write-kubeconfig-mode"] = "0600"
+		}
 	} else {
 		m["server"] = regURL
 		m["token"] = token
 	}
-	if len(n.Labels) > 0 {
-		var labels []string
-		for k, v := range n.Labels {
-			labels = append(labels, k+"="+v)
-		}
+	// node-labels: merge labels from the node entry and rke2Config.
+	var labels []string
+	if v, ok := m["node-labels"]; ok {
+		labels = append(labels, toStringSlice(v)...)
+	}
+	for k, v := range n.Labels {
+		labels = append(labels, k+"="+v)
+	}
+	if len(labels) > 0 {
 		sort.Strings(labels)
 		m["node-labels"] = labels
 	}
 	return yaml.Marshal(m)
+}
+
+// apiHost returns the host part of spec.endpoints.apiAddress.
+func apiHost(c *cluster.Cluster) string {
+	if c.Spec.Endpoints.APIAddress == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(c.Spec.Endpoints.APIAddress)
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
+func toStringSlice(v any) []string {
+	var out []string
+	switch t := v.(type) {
+	case []string:
+		out = t
+	case []any:
+		for _, x := range t {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 // convergeNode brings one node to running state, resuming after its
@@ -427,8 +498,10 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 		if err != nil {
 			return err
 		}
-		if _, err := r.client.RunSudo("mkdir -p /etc/rancher/rke2"); err != nil {
+		if res, err := r.client.RunSudo("mkdir -p /etc/rancher/rke2"); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
+		} else if res.ExitCode != 0 {
+			return fmt.Errorf("%s: mkdir /etc/rancher/rke2: %s", name, res.Stderr)
 		}
 		if err := r.client.WriteFile(RKE2ConfigPath, cfg, 0o600); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
@@ -452,8 +525,10 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 
 	if !st.Done(name, StageInstalled) {
 		logf(opts, "  %s: run install.sh (%s)", name, r.role)
+		// The upstream installer copies artifacts and enables nothing;
+		// service start is controlled by searke below.
 		installCmd := fmt.Sprintf(
-			"INSTALL_RKE2_ARTIFACT_PATH=%s INSTALL_RKE2_TYPE=%s INSTALL_RKE2_SKIP_START=true INSTALL_RKE2_VERSION=%s sh %s",
+			"INSTALL_RKE2_ARTIFACT_PATH=%s INSTALL_RKE2_TYPE=%s INSTALL_RKE2_VERSION=%s sh %s",
 			shellQuote(RemoteArtifacts), r.role, shellQuote(st.Version), RemoteRoot+"/install.sh")
 		res, err := r.client.RunSudo(installCmd)
 		if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -29,8 +30,9 @@ type SSHConfig struct {
 // Client is an SSH connection to a node.
 type Client struct {
 	*ssh.Client
-	cfg  SSHConfig
-	addr string
+	cfg        SSHConfig
+	addr       string
+	agentConn  io.Closer // ssh-agent socket, closed with the client
 }
 
 // Connect dials a node and authenticates with the identity file and/or
@@ -52,8 +54,10 @@ func Connect(address string, cfg SSHConfig) (*Client, error) {
 		}
 		auths = append(auths, ssh.PublicKeys(signer))
 	}
+	var agentConn io.Closer
 	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
 		if conn, err := net.Dial("unix", sock); err == nil {
+			agentConn = conn
 			auths = append(auths, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
 		}
 	}
@@ -75,9 +79,21 @@ func Connect(address string, cfg SSHConfig) (*Client, error) {
 	addr := net.JoinHostPort(address, fmt.Sprint(cfg.Port))
 	conn, err := ssh.Dial("tcp", addr, sshCfg)
 	if err != nil {
+		if agentConn != nil {
+			agentConn.Close()
+		}
 		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
-	return &Client{Client: conn, cfg: cfg, addr: addr}, nil
+	return &Client{Client: conn, cfg: cfg, addr: addr, agentConn: agentConn}, nil
+}
+
+// Close shuts down the SSH connection and the agent socket.
+func (c *Client) Close() error {
+	err := c.Client.Close()
+	if c.agentConn != nil {
+		c.agentConn.Close()
+	}
+	return err
 }
 
 // Result holds the output of a remote command.
@@ -138,8 +154,14 @@ const StagingDir = "/var/lib/rancher/searke-staging"
 // so SFTP can write large payloads without sudo.
 func (c *Client) PrepareStaging() error {
 	if !c.cfg.Sudo {
-		_, err := c.Run("mkdir -p " + shellQuote(StagingDir))
-		return err
+		res, err := c.Run("mkdir -p " + shellQuote(StagingDir))
+		if err != nil {
+			return err
+		}
+		if res.ExitCode != 0 {
+			return fmt.Errorf("prepare staging: %s", res.Stderr)
+		}
+		return nil
 	}
 	res, err := c.RunSudo(fmt.Sprintf(
 		"mkdir -p %s && chown %s %s",
@@ -185,7 +207,8 @@ func (c *Client) UploadFile(local, remote string, mode os.FileMode) error {
 	}
 	f.Close()
 	if c.cfg.Sudo {
-		res, err := c.RunSudo(fmt.Sprintf("install -m %o -o root -g root %s %s && rm -f %s",
+		// -D creates missing parent dirs; same-fs move avoids a copy.
+		res, err := c.RunSudo(fmt.Sprintf("install -D -m %o -o root -g root %s %s && rm -f %s",
 			mode, shellQuote(dest), shellQuote(remote), shellQuote(dest)))
 		if err != nil {
 			return err
