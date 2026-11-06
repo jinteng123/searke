@@ -35,7 +35,8 @@ const (
 // Options controls Validate/Plan/Apply runs.
 type Options struct {
 	ClusterFile string
-	StateDir    string // defaults to the cluster file's directory
+	Cluster     *cluster.Cluster // when set, used instead of loading ClusterFile
+	StateDir    string           // defaults to the cluster file's directory
 	Log         func(format string, args ...any)
 }
 
@@ -64,9 +65,13 @@ func logf(o *Options, f string, a ...any) {
 }
 
 func loadAndResolve(opts *Options) (*cluster.Cluster, *ResolvedBundle, error) {
-	c, err := cluster.Load(opts.ClusterFile)
-	if err != nil {
-		return nil, nil, err
+	c := opts.Cluster
+	if c == nil {
+		var err error
+		c, err = cluster.Load(opts.ClusterFile)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	src, err := ociimg.ParseSource(c.Spec.RKE2.Bundle)
 	if err != nil {

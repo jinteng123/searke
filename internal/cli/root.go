@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jint/searke/internal/deploy"
 )
 
 func logf(format string, args ...any) {
@@ -130,6 +132,27 @@ func newClusterCmds() []*cobra.Command {
 		Short: "Show recorded apply state and live node status",
 		RunE:  func(cmd *cobra.Command, args []string) error { return runStatus(file) },
 	}
+	var ro deploy.RunOptions
+	run := &cobra.Command{
+		Use:   "run <bundle>",
+		Short: "Install a single-node cluster on this machine (no cluster.yaml needed)",
+		Long: "Install RKE2 on this machine as a single-node cluster, like `sealos run --single`.\n" +
+			"The bundle may be an OCI layout dir, a .oci.tar archive, or a registry reference.\n" +
+			"A cluster.yaml is generated under --home for status/snapshot/resume reuse.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ro.Bundle = args[0]
+			return runSingle(cmd.Context(), ro)
+		},
+	}
+	run.Flags().StringVar(&ro.Name, "name", "", "cluster name (default searke-<hostname>)")
+	run.Flags().StringVar(&ro.NodeName, "node-name", "", "Kubernetes node name (default hostname)")
+	run.Flags().StringVar(&ro.Address, "address", "", "registration/API IP (default primary IPv4)")
+	run.Flags().StringVar(&ro.CNI, "cni", "canal", "CNI the bundle was built with")
+	run.Flags().StringVar(&ro.ClusterCIDR, "cluster-cidr", "10.42.0.0/16", "pod network CIDR")
+	run.Flags().StringVar(&ro.ServiceCIDR, "service-cidr", "10.43.0.0/16", "service network CIDR")
+	run.Flags().StringVar(&ro.HomeDir, "home", "", "dir for generated cluster.yaml and state (default ~/.searke/<name>)")
+
 	var skipDrain, skipSnapshot bool
 	upgrade := &cobra.Command{
 		Use:   "upgrade",
@@ -144,7 +167,7 @@ func newClusterCmds() []*cobra.Command {
 		flag(c)
 	}
 	snap := newSnapshotCmd(&file)
-	return []*cobra.Command{validate, plan, apply, status, upgrade, snap}
+	return []*cobra.Command{validate, plan, apply, status, upgrade, run, snap}
 }
 
 func newSnapshotCmd(file *string) *cobra.Command {

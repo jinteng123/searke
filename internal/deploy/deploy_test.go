@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +141,49 @@ func TestStateStages(t *testing.T) {
 	}
 	if fi.Mode().Perm() != 0o600 {
 		t.Fatalf("state file mode = %o, want 600", fi.Mode().Perm())
+	}
+}
+
+func TestSingleNodeCluster(t *testing.T) {
+	home := t.TempDir()
+	c, file, err := SingleNodeCluster(RunOptions{Bundle: "./x.oci", HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Spec.Servers) != 1 || len(c.Spec.Agents) != 0 {
+		t.Fatalf("want exactly one server, got %+v", c.Spec.Servers)
+	}
+	n := c.Spec.Servers[0]
+	if !cluster.IsLocalAddress(n.Address) {
+		t.Fatalf("node address %s must be local", n.Address)
+	}
+	if c.Spec.Endpoints.RegistrationAddress == "" || c.Spec.Endpoints.APIAddress == "" {
+		t.Fatal("endpoints not populated")
+	}
+	if c.Spec.RKE2Config["cluster-cidr"] != "10.42.0.0/16" {
+		t.Fatal("default cluster-cidr missing")
+	}
+	// the emitted file loads back to an equivalent cluster
+	loaded, err := cluster.Load(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Name() != c.Name() || loaded.Spec.RKE2.Bundle != c.Spec.RKE2.Bundle ||
+		loaded.Spec.Servers[0].Name != n.Name {
+		t.Fatalf("reloaded cluster differs: %+v", loaded.Spec)
+	}
+}
+
+func TestSanitizeAndPrimaryIP(t *testing.T) {
+	if got := cluster.SanitizeNodeName("My_Server.Host"); got != "my-server.host" {
+		t.Fatalf("sanitize = %q", got)
+	}
+	if got := cluster.SanitizeNodeName("___"); got != "node" {
+		t.Fatalf("sanitize empty = %q", got)
+	}
+	ip := cluster.PrimaryIPv4()
+	if net.ParseIP(ip) == nil {
+		t.Fatalf("PrimaryIPv4 = %q", ip)
 	}
 }
 

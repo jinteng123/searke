@@ -20,6 +20,8 @@
 
 **本地执行（local execution，仿 sealos）：** 节点 `address` 指向本机时 `Connect` 返回 `LocalExecutor` 而非 SSH client——命令经 `sh -c` 直跑、文件分发变成本地拷贝，apply/upgrade/snapshot/status 全部生效且编排代码零改动。探测范围：loopback、`localhost`、本机 hostname、本机网卡地址，与远端 SSH 节点可在同一集群混用。root 运行 searke 时特权操作直跑；非 root + `ssh.sudo: true` 走 `sudo -n` 与 staging 目录，语义与 SSH 路径一致。全部节点为本机地址时 `spec.ssh.user` 可省略。
 
+**`searke run`（仿 `sealos run --single`）：** 免 cluster.yaml 的单机安装入口——合成单节点集群（本机 127.0.0.1 → 本地执行）、主网卡 IPv4 作 registration/apiAddress、hostname 作节点名，生成的 cluster.yaml 与状态写入 `~/.searke/<name>/` 供 `status`/`snapshot`/续跑复用。
+
 ## 1. 背景与目标
 
 当前 RKE2 离线部署依赖 Ansible 和 Python 运行环境，在 ARM64 控制节点上遇到 Python wheel / 原生扩展兼容问题。`searke` 的目标是用一个 Go 编译的命令行工具描述、打包和分发 RKE2 制品，并通过 YAML 驱动集群安装。

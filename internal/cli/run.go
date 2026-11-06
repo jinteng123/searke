@@ -106,6 +106,18 @@ func runApply(ctx context.Context, file string) error {
 	return deploy.Apply(ctx, deployOpts(file))
 }
 
+// runSingle implements `searke run`: synthesize a one-node local
+// cluster, persist its cluster.yaml, then Apply it.
+func runSingle(ctx context.Context, ro deploy.RunOptions) error {
+	c, file, err := deploy.SingleNodeCluster(ro)
+	if err != nil {
+		return err
+	}
+	logf("single-node cluster %q: node %s @ %s", c.Name(), c.Spec.Servers[0].Name, c.RegistrationHost())
+	logf("generated %s (reuse: searke apply|status|snapshot -f %s)", file, file)
+	return deploy.Apply(ctx, &deploy.Options{ClusterFile: file, Cluster: c, Log: logf})
+}
+
 func runStatus(file string) error {
 	return deploy.Status(deployOpts(file))
 }

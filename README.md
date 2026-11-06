@@ -12,6 +12,22 @@
 go build -o searke ./cmd/searke
 ```
 
+## 单机快速安装（searke run）
+
+等价于 `sealos run --single`：不写 cluster.yaml，一条命令在本机装单节点集群。
+
+```bash
+sudo searke run ./rke2-oci
+# 或归档 / registry 引用
+sudo searke run ./rke2-v1.36.5-rke2r1-multiarch.oci.tar
+```
+
+行为：唯一节点为本机（address 固定 127.0.0.1 → 本地执行）；registration/API
+地址取本机主网卡 IPv4（`--address` 可覆盖）；节点名取 hostname（DNS-1123 化）；
+cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 状态写入
+`~/.searke/<name>/`，之后可以直接 `searke status|snapshot|apply -f` 复用或续跑。
+非 root 运行需要 `sudo -n` 可用。
+
 ## 命令一览
 
 | 命令 | 状态 | 说明 |
@@ -22,6 +38,7 @@ go build -o searke ./cmd/searke
 | `searke image push <ref> --from <oci-dir>` | ✅ 已实现 | `remote.WriteIndex` 推送整个 index，使用默认 docker keychain 认证 |
 | `searke image save <ref-or-dir> -o <tar>` | ✅ 已实现并真实验证 | 导出为含 OCI Layout 的 tar 归档（离线搬运） |
 | `searke image load <tar> -o <oci-dir>` | ✅ 已实现并真实验证 | 导入本地归档，还原 OCI Layout |
+| `searke run <bundle>` | ✅ 已实现 | 单机安装（仿 `sealos run --single`）：合成单节点集群走本地执行，生成 cluster.yaml 于 `~/.searke/<name>/` |
 | `searke validate -f cluster.yaml` | ✅ 已实现 | 本地 schema + bundle 注解一致性 + SSH 连接 + 远端 preflight（只读） |
 | `searke plan -f cluster.yaml` | ✅ 已实现 | validate 之上列出每个节点将执行的动作，不做远端变更 |
 | `searke apply -f cluster.yaml` | ✅ 已实现 | 分阶段安装：preflight → 按节点架构分发 payload → 写 config.yaml → install.sh → 首 server → 其他 server → agent → Ready；阶段落盘可断点续跑，已属其他集群的节点会拒绝重置 |
