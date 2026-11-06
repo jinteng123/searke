@@ -97,6 +97,19 @@ rke2-bundle/
 - `spec.rke2Config` 中禁止 `server`/`token`/`node-name`（由工具管理）
 - 节点名必须唯一，远端主机名也必须唯一（preflight 检查）
 
+### 本机节点（local execution）
+
+节点 `address` 指向本机时自动改走本地执行、不走 SSH，无需任何配置——探测范围
+包括 `127.0.0.0/8`、`::1`、`localhost`、本机 hostname、以及本机所有网卡地址。同一
+cluster.yaml 里本机节点和 SSH 远端节点可以混用。
+
+- 推荐 `sudo searke apply` 直接以 root 运行：所有命令、文件分发（本地拷贝）都是
+  root 直跑，无 sudo 开销
+- 普通用户运行且 `spec.ssh.sudo: true`：特权命令走 `sudo -n`，上传经 staging 目录
+  再 `install -D` 就位，与 SSH 路径同一语义
+- 全部节点均为本机地址时 `spec.ssh.user`/`identityFile` 可省略
+- 单机集群最小示例：`servers` 只写一个 `127.0.0.1` 节点即可（仍要求奇数台）
+
 ## 安全约定
 
 - **信任锚模型**：sha256sum 清单与 install.sh 只从 GitHub 控制端点（github.com / raw.githubusercontent.com / api.github.com）获取；第三方镜像只传大文件且必须过受信清单的 SHA256 校验，清单本身绝不走镜像
@@ -110,7 +123,7 @@ rke2-bundle/
 /opt/searke/install.sh            上游安装脚本
 /opt/searke/artifacts/            INSTALL_RKE2_ARTIFACT_PATH 指向的制品目录
 /etc/rancher/rke2/config.yaml     searke 渲染的节点配置
-/var/lib/rancher/searke-staging/  SFTP 上传暂存区（传输后清理）
+/var/lib/rancher/searke-staging/  上传暂存区（SFTP/非 root 本地执行共用，传输后清理）
 ```
 
 ## 测试
@@ -121,15 +134,15 @@ go test ./...
 
 单元测试覆盖：schema 校验、资产命名、sha256sum 解析、VerifyPlatform、
 httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/save/load
-回环、config 渲染、状态机。真实环境已验证：`v1.36.5+rke2r1` 双架构 fetch +
-verify + build + save + load 全部通过。
+回环、config 渲染、状态机、本地执行器与本机地址探测。真实环境已验证：
+`v1.36.5+rke2r1` 双架构 fetch + verify + build + save + load 全部通过。
 
 ## 故障排查
 
 - **下载卡死/慢速连接**：大文件候选顺序为 GitHub → gh-proxy.com → ghproxy.net，连接级超时 10s、停滞 45s 即切换下一候选并断点续传。信任锚文件（sha256sum、install.sh）不走镜像，只回退到 api.github.com。`bundle.lock.yaml` 记录实际生效 URL。
 - **`sha256 mismatch`**：上游清单与文件不符（串包或损坏）。删除对应文件重跑 fetch；校验未过不会生成镜像。
-- **SSH dial 失败/known_hosts**：节点必须已在 `~/.ssh/known_hosts`（先手动 `ssh` 一次或 `ssh-keyscan`）；密钥需无密码或在 ssh-agent 中。
-- **`passwordless sudo required`**：`spec.ssh.sudo: true` 时要求 `sudo -n` 可用；否则用 root 用户。
+- **SSH dial 失败/known_hosts**：节点必须已在 `~/.ssh/known_hosts`（先手动 `ssh` 一次或 `ssh-keyscan`）；密钥需无密码或在 ssh-agent 中。本机地址节点不走 SSH，跳过此检查。
+- **`passwordless sudo required`**：`spec.ssh.sudo: true` 时要求 `sudo -n` 可用；否则用 root 用户，或以 root 运行 searke（本机节点）。
 - **节点已属其他集群**：apply/preflight 发现远端 `config.yaml` 的 `server:` 与本集群注册地址不同会拒绝继续，不会自动 reset。
 - **中断续跑**：`.searke/state-<cluster>.json` 记录每节点阶段；重跑 `apply` 自动跳过已完成阶段。版本不一致的状态文件需 `upgrade` 或删除重建。
 - **kubeconfig**：`ssh <user>@<首server> 'sudo cat /etc/rancher/rke2/rke2.yaml'`，把 server 地址换成 `apiAddress`。

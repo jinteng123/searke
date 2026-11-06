@@ -53,7 +53,7 @@ type ResolvedBundle struct {
 type nodeRuntime struct {
 	node   cluster.Node
 	role   string
-	client *Client
+	client Executor
 	report *PreflightReport
 }
 
@@ -108,7 +108,7 @@ func stateDir(opts *Options) string {
 	return filepath.Dir(abs)
 }
 
-// connectAll SSHes into every node and runs preflight.
+// connectAll reaches every node (SSH or local exec) and runs preflight.
 func connectAll(c *cluster.Cluster, opts *Options) ([]*nodeRuntime, error) {
 	sshCfg := SSHConfig{
 		User:         c.Spec.SSH.User,
@@ -319,8 +319,12 @@ func Apply(ctx context.Context, opts *Options) error {
 	if err := st.Log("apply", "cluster converged: "+fmt.Sprint(len(rts))+" nodes"); err != nil {
 		return err
 	}
-	logf(opts, "apply complete. kubeconfig: ssh %s@%s 'sudo cat %s'",
-		c.Spec.SSH.User, first.node.Address, kubeconfigPath)
+	if cluster.IsLocalAddress(first.node.Address) {
+		logf(opts, "apply complete. kubeconfig: sudo cat %s", kubeconfigPath)
+	} else {
+		logf(opts, "apply complete. kubeconfig: ssh %s@%s 'sudo cat %s'",
+			c.Spec.SSH.User, first.node.Address, kubeconfigPath)
+	}
 	return nil
 }
 

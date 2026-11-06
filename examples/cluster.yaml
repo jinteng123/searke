@@ -14,6 +14,8 @@ spec:
     registrationAddress: 10.0.0.100:9345
     apiAddress: 10.0.0.100:6443
   servers:
+    # 本机节点：address 写 127.0.0.1 / localhost / 本机网卡 IP 时自动走本地
+    # 执行（不走 SSH），可与远端节点混用；全本机集群可省略 spec.ssh。
     - { name: master-1, address: 10.0.0.11 }
     - { name: master-2, address: 10.0.0.12 }
     - { name: master-3, address: 10.0.0.13 }

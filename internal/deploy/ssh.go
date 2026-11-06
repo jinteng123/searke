@@ -35,9 +35,22 @@ type Client struct {
 	agentConn  io.Closer // ssh-agent socket, closed with the client
 }
 
-// Connect dials a node and authenticates with the identity file and/or
-// the local SSH agent.
-func Connect(address string, cfg SSHConfig) (*Client, error) {
+var _ Executor = (*Client)(nil)
+
+// Connect returns an Executor for a node: a LocalExecutor when the
+// address resolves to this machine (loopback, hostname, or a local
+// interface address), otherwise an SSH client authenticated with the
+// identity file and/or the local SSH agent.
+func Connect(address string, cfg SSHConfig) (Executor, error) {
+	if cluster.IsLocalAddress(address) {
+		return NewLocalExecutor(address, cfg)
+	}
+	return connectSSH(address, cfg)
+}
+
+// connectSSH dials a node and authenticates with the identity file
+// and/or the local SSH agent.
+func connectSSH(address string, cfg SSHConfig) (*Client, error) {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 15 * time.Second
 	}

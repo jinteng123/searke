@@ -13,8 +13,8 @@ import (
 // snapshotDir is where RKE2 stores etcd snapshots on a server node.
 const snapshotDir = "/var/lib/rancher/rke2/server/db/snapshots"
 
-// connectFirst opens SSH to the bootstrap server.
-func connectFirst(c *cluster.Cluster) (*Client, error) {
+// connectFirst opens a connection to the bootstrap server.
+func connectFirst(c *cluster.Cluster) (Executor, error) {
 	first := c.FirstServer()
 	return Connect(first.Address, SSHConfig{
 		User:         c.Spec.SSH.User,
@@ -121,13 +121,13 @@ func SnapshotRestore(opts *Options, name string, confirm bool) error {
 		Sudo:         c.Spec.SSH.Sudo,
 	}
 
-	clients := map[string]*Client{}
+	clients := map[string]Executor{}
 	defer func() {
 		for _, cl := range clients {
 			cl.Close()
 		}
 	}()
-	conn := func(n cluster.Node) (*Client, error) {
+	conn := func(n cluster.Node) (Executor, error) {
 		if cl, ok := clients[n.Name]; ok {
 			return cl, nil
 		}

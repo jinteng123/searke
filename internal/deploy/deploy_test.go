@@ -142,3 +142,99 @@ func TestStateStages(t *testing.T) {
 		t.Fatalf("state file mode = %o, want 600", fi.Mode().Perm())
 	}
 }
+
+func TestConnectLocalReturnsLocalExecutor(t *testing.T) {
+	ex, err := Connect("127.0.0.1", SSHConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ex.(*LocalExecutor); !ok {
+		t.Fatalf("127.0.0.1 must return *LocalExecutor, got %T", ex)
+	}
+	defer ex.Close()
+}
+
+func TestLocalExecutorCommands(t *testing.T) {
+	ex, err := NewLocalExecutor("127.0.0.1", SSHConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ex.Run("printf hello && printf oops >&2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode != 0 || res.Stdout != "hello" || res.Stderr != "oops" {
+		t.Fatalf("got %+v", res)
+	}
+	// non-zero exit is reported, not returned as error
+	res, err = ex.Run("printf still-ran; exit 3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode != 3 || res.Stdout != "still-ran" {
+		t.Fatalf("got %+v", res)
+	}
+	// stdin feed reaches the command
+	res, err = ex.RunStdin("cat", []byte("piped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stdout != "piped" {
+		t.Fatalf("stdin not fed: %+v", res)
+	}
+	// RunSudo: as root it runs directly; as non-root without sudo
+	// configured it runs unprivileged — either way the command works.
+	if res, err = ex.RunSudo("printf ok"); err != nil || res.ExitCode != 0 {
+		t.Fatalf("RunSudo: %+v %v", res, err)
+	}
+}
+
+func TestLocalExecutorFiles(t *testing.T) {
+	ex, err := NewLocalExecutor("127.0.0.1", SSHConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	// UploadFile copies into place and applies the mode (non-sudo path).
+	src := filepath.Join(dir, "src.bin")
+	if err := os.WriteFile(src, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "deep", "nested", "dst.bin")
+	if err := ex.UploadFile(src, dst, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "payload" {
+		t.Fatalf("content = %q", data)
+	}
+	if fi, _ := os.Stat(dst); fi.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %o", fi.Mode().Perm())
+	}
+
+	// WriteFile puts content at a path; callers create the parent dir
+	// first, matching the remote flow (mkdir /etc/rancher/rke2).
+	wf := filepath.Join(dir, "conf", "cfg.yaml")
+	if err := os.MkdirAll(filepath.Dir(wf), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.WriteFile(wf, []byte("a: b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(wf); string(data) != "a: b\n" {
+		t.Fatalf("write content = %q", data)
+	}
+
+	// DownloadFile copies a readable file to a local path.
+	dl := filepath.Join(dir, "dl.bin")
+	if err := ex.DownloadFile(src, dl); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(dl); string(data) != "payload" {
+		t.Fatalf("downloaded = %q", data)
+	}
+}

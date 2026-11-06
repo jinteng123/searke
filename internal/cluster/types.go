@@ -103,7 +103,14 @@ func (c *Cluster) Validate() error {
 		return fmt.Errorf("spec.rke2.bundle is required")
 	}
 	if c.Spec.SSH.User == "" {
-		return fmt.Errorf("spec.ssh.user is required")
+		// SSH credentials are only needed to reach remote nodes; a
+		// cluster whose nodes all resolve to this machine is driven
+		// by local execution and needs none.
+		for _, n := range c.AllNodes() {
+			if !IsLocalAddress(n.Address) {
+				return fmt.Errorf("spec.ssh.user is required for remote nodes")
+			}
+		}
 	}
 	if c.Spec.SSH.Port == 0 {
 		c.Spec.SSH.Port = 22

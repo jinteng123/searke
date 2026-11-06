@@ -32,7 +32,7 @@ func (r PreflightReport) Platform() (bundle.Platform, error) {
 
 // Preflight gathers remote facts and verifies them against the local
 // requirements. It makes no changes.
-func Preflight(c *Client, nodeName string) (*PreflightReport, error) {
+func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 	rep := &PreflightReport{}
 
 	out, err := mustOK(c.Run("uname -s && uname -m"))
