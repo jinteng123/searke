@@ -93,10 +93,16 @@ func LoadState(path, clusterName, bundleRef, version, cni string) (*State, error
 	}
 	// Guard against a stale state file being reused across bundles.
 	if s.Version != "" && version != "" && s.Version != version {
-		return nil, fmt.Errorf("state %s was recorded for RKE2 %s but bundle has %s; remove the state file or use the matching bundle",
+		return nil, fmt.Errorf("state %s was recorded for RKE2 %s but bundle has %s; use `searke upgrade` for version changes, or use the matching bundle",
 			path, s.Version, version)
 	}
 	return s, nil
+}
+
+// LoadStateUnchecked loads the state file without the version guard —
+// used by upgrade where the bundle version deliberately differs.
+func LoadStateUnchecked(path, clusterName string) (*State, error) {
+	return LoadState(path, clusterName, "", "", "")
 }
 
 // Save persists the state file with owner-only permissions.

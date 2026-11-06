@@ -110,3 +110,23 @@ func runStatus(file string) error {
 	return deploy.Status(deployOpts(file))
 }
 
+func runUpgrade(ctx context.Context, file string) error {
+	return deploy.Upgrade(ctx, deployOpts(file))
+}
+
+func runSnapshotSave(file, name string) error {
+	return deploy.SnapshotSave(deployOpts(file), name)
+}
+
+func runSnapshotList(file string) error {
+	return deploy.SnapshotList(deployOpts(file))
+}
+
+func runSnapshotPull(file, name, outDir string) error {
+	return deploy.SnapshotPull(deployOpts(file), name, outDir)
+}
+
+func runSnapshotRestore(file, name string, yes bool) error {
+	return deploy.SnapshotRestore(deployOpts(file), name, yes)
+}
+

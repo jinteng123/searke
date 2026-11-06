@@ -17,10 +17,11 @@ type PreflightReport struct {
 	HasRKE2      bool   // /var/lib/rancher/rke2 exists
 	Service      string // rke2-server | rke2-agent | ""
 	ServiceState string // systemd is-active output
-	ConfigExists bool
-	ExistingURL  string // server: line in existing config.yaml, if any
-	DiskAvailKiB int64  // on /var/lib/rancher (or /)
-	HasRoute     bool
+	ConfigExists     bool
+	ExistingURL      string // server: line in existing config.yaml, if any
+	InstalledVersion string // rke2 --version, if installed
+	DiskAvailKiB     int64  // on /var/lib/rancher (or /)
+	HasRoute         bool
 }
 
 // Platform converts the discovered arch into a bundle platform.
@@ -105,6 +106,12 @@ func Preflight(c *Client, nodeName string) (*PreflightReport, error) {
 				rep.ServiceState = strings.TrimSpace(r2.Stdout)
 			}
 			break
+		}
+	}
+	if r, _ := c.RunSudo("rke2 --version 2>/dev/null | head -1"); r != nil && r.ExitCode == 0 {
+		// "rke2 version v1.36.5+rke2r1 (rev abc)"
+		if f := strings.Fields(strings.TrimSpace(r.Stdout)); len(f) >= 3 {
+			rep.InstalledVersion = f[2]
 		}
 	}
 	return rep, nil

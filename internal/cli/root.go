@@ -130,8 +130,56 @@ func newClusterCmds() []*cobra.Command {
 		Short: "Show recorded apply state and live node status",
 		RunE:  func(cmd *cobra.Command, args []string) error { return runStatus(file) },
 	}
-	for _, c := range []*cobra.Command{validate, plan, apply, status} {
+	upgrade := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Rolling upgrade to the bundle version (servers first, then agents)",
+		RunE:  func(cmd *cobra.Command, args []string) error { return runUpgrade(cmd.Context(), file) },
+	}
+	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade} {
 		flag(c)
 	}
-	return []*cobra.Command{validate, plan, apply, status}
+	snap := newSnapshotCmd(&file)
+	return []*cobra.Command{validate, plan, apply, status, upgrade, snap}
+}
+
+func newSnapshotCmd(file *string) *cobra.Command {
+	cmd := &cobra.Command{Use: "snapshot", Short: "etcd snapshot workflows"}
+
+	var name string
+	save := &cobra.Command{
+		Use:   "save",
+		Short: "Create an etcd snapshot on the bootstrap server",
+		RunE:  func(cmd *cobra.Command, args []string) error { return runSnapshotSave(*file, name) },
+	}
+	save.Flags().StringVar(&name, "name", "", "snapshot name (default searke-<timestamp>)")
+
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List snapshots on the bootstrap server",
+		RunE:  func(cmd *cobra.Command, args []string) error { return runSnapshotList(*file) },
+	}
+
+	var outDir string
+	pull := &cobra.Command{
+		Use:   "pull <name>",
+		Short: "Download a snapshot file locally",
+		Args:  cobra.ExactArgs(1),
+		RunE:  func(cmd *cobra.Command, args []string) error { return runSnapshotPull(*file, args[0], outDir) },
+	}
+	pull.Flags().StringVarP(&outDir, "output-dir", "o", "./snapshots", "local output dir")
+
+	var yes bool
+	restore := &cobra.Command{
+		Use:   "restore <name>",
+		Short: "cluster-reset restore on the bootstrap server (other servers must rejoin)",
+		Args:  cobra.ExactArgs(1),
+		RunE:  func(cmd *cobra.Command, args []string) error { return runSnapshotRestore(*file, args[0], yes) },
+	}
+	restore.Flags().BoolVar(&yes, "yes", false, "confirm the destructive restore")
+
+	for _, c := range []*cobra.Command{save, list, pull, restore} {
+		c.Flags().StringVarP(file, "file", "f", "cluster.yaml", "cluster descriptor")
+	}
+	cmd.AddCommand(save, list, pull, restore)
+	return cmd
 }

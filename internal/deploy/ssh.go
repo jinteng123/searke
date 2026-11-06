@@ -199,6 +199,33 @@ func (c *Client) UploadFile(local, remote string, mode os.FileMode) error {
 	return nil
 }
 
+// DownloadFile streams a root-owned remote file to a local path via
+// `sudo cat` (SFTP cannot read root files).
+func (c *Client) DownloadFile(remote, local string) error {
+	sess, err := c.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	f, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sess.Stdout = f
+	var errBuf bytes.Buffer
+	sess.Stderr = &errBuf
+	cmd := "cat " + shellQuote(remote)
+	if c.cfg.Sudo {
+		cmd = "sudo -n cat " + shellQuote(remote)
+	}
+	if err := sess.Run(cmd); err != nil {
+		os.Remove(local)
+		return fmt.Errorf("download %s: %v: %s", remote, err, errBuf.String())
+	}
+	return nil
+}
+
 // WriteFile writes small text content to a remote path as root.
 func (c *Client) WriteFile(remote string, content []byte, mode os.FileMode) error {
 	res, err := c.RunStdin(fmt.Sprintf("umask 077; tee %s > /dev/null && chmod %o %s",

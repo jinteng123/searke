@@ -14,7 +14,7 @@
 | 阶段 1：`bundle fetch`/`verify` | ✅ 完成 | `v1.36.5+rke2r1` amd64+arm64 全量下载、上游 SHA256 校验、`bundle.lock.yaml` 生成真实通过；超时/重试/断点续传/原子落盘已实现 |
 | 阶段 2：`image build/push/save/load` | ✅ 完成 | build/save/load 已真实验证（1.5GB 双架构归档）；push 代码就绪待 registry 验证 |
 | 阶段 3：`validate/plan/apply` | ✅ 代码完成 | SSH/SFTP/preflight/分发/install.sh/编排/幂等续跑全部实现；`validate` 已验证本地路径；多节点实机端到端待验证 |
-| 阶段 4：`status` | ◑ 部分 | `status`（状态文件 + 首 server kubectl 视图）已实现；etcd snapshot/restore、滚动升级未做 |
+| 阶段 4：`status`+生命周期 | ✅ 代码完成 | `status`、etcd snapshot save/list/pull/restore、按 server 先 agent 后的滚动升级均已实现；实机待验证 |
 
 **实现期新增决策：** 开发环境实测 `raw.githubusercontent.com` 与 GitHub Release 资产域名不可达，因此下载器内置主源+镜像回退（install.sh → jsdelivr；release 资产 → gh-proxy.com / ghproxy.net），lock 文件记录实际生效 URL。镜像只作为传输通道，完整性仍由上游 sha256sum 清单保证。
 

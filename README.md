@@ -26,6 +26,8 @@ go build -o searke ./cmd/searke
 | `searke plan -f cluster.yaml` | ✅ 已实现 | validate 之上列出每个节点将执行的动作，不做远端变更 |
 | `searke apply -f cluster.yaml` | ✅ 已实现 | 分阶段安装：preflight → 按节点架构分发 payload → 写 config.yaml → install.sh → 首 server → 其他 server → agent → Ready；阶段落盘可断点续跑，已属其他集群的节点会拒绝重置 |
 | `searke status -f cluster.yaml` | ✅ 已实现 | 读取本地 apply 状态 + 从首 server 拉取 `kubectl get nodes` 实时视图 |
+| `searke upgrade -f cluster.yaml` | ✅ 已实现 | 滚动升级：server 逐台先于 agent；分发新 payload → 重跑 install.sh → 重启服务 → 等 Ready；`apply` 检测到版本漂移会引导改用本命令 |
+| `searke snapshot save/list/pull/restore` | ✅ 已实现 | etcd 快照工作流：首 server 上 `rke2 etcd-snapshot save`、列举、SFTP/`sudo cat` 拉回本地、cluster-reset 恢复（需 `--yes`，其余 server 需经 apply 重入） |
 
 ## 快速流程
 
@@ -124,6 +126,7 @@ verify + build + save + load 全部通过。
 ## 已知限制 / 待办
 
 - `image push` 代码已实现但未在真实 registry 验证
-- `apply`/`plan`/`validate`/`status` 已实现完整逻辑，尚无真实多节点环境端到端验证
+- `apply`/`plan`/`upgrade`/`snapshot`/`status` 已实现完整逻辑，尚无真实多节点环境端到端验证
+- `snapshot restore` 仅覆盖首 server 的 cluster-reset；其余 server 需 `apply` 重入
 - 首期节点 OS 限定 Ubuntu 22.04 由 preflight 检查
-- etcd snapshot/restore、滚动升级（计划阶段 4）尚未实现
+- 节点增删、CNI profile 扩展未做（计划明确缓议）

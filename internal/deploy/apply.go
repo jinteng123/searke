@@ -233,6 +233,11 @@ func Apply(ctx context.Context, opts *Options) error {
 	}
 	defer closeAll(rts)
 	for _, r := range rts {
+		if r.report.Service != "" && r.report.ServiceState == "active" &&
+			r.report.InstalledVersion != "" && r.report.InstalledVersion != rb.Meta.Version {
+			return fmt.Errorf("%s: installed RKE2 %s but bundle carries %s; run `searke upgrade` for version changes",
+				r.node.Name, r.report.InstalledVersion, rb.Meta.Version)
+		}
 		if err := st.Mark(r.node.Name, r.role, r.report.Arch, StagePreflight, "ok"); err != nil {
 			return err
 		}
