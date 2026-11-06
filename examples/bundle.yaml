@@ -1,0 +1,8 @@
+apiVersion: searke.io/v1alpha1
+kind: RKE2Bundle
+spec:
+  version: v1.36.5+rke2r1
+  cni: canal
+  platforms:
+    - linux/amd64
+    - linux/arm64

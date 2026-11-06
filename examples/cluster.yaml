@@ -1,0 +1,26 @@
+apiVersion: searke.io/v1alpha1
+kind: Cluster
+metadata:
+  name: rke2-lab
+spec:
+  rke2:
+    bundle: ./dist/rke2-v1.36.5-rke2r1-multiarch.oci.tar
+    cni: canal
+  ssh:
+    user: ubuntu
+    identityFile: ~/.ssh/id_ed25519
+    sudo: true
+  endpoints:
+    registrationAddress: 10.0.0.100:9345
+    apiAddress: 10.0.0.100:6443
+  servers:
+    - { name: master-1, address: 10.0.0.11 }
+    - { name: master-2, address: 10.0.0.12 }
+    - { name: master-3, address: 10.0.0.13 }
+  agents:
+    - { name: worker-1, address: 10.0.0.21 }
+    - { name: worker-2, address: 10.0.0.22 }
+    - { name: worker-3, address: 10.0.0.23 }
+  rke2Config:
+    cluster-cidr: 10.42.0.0/16
+    service-cidr: 10.43.0.0/16
