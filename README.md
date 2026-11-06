@@ -123,6 +123,16 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 回环、config 渲染、状态机。真实环境已验证：`v1.36.5+rke2r1` 双架构 fetch +
 verify + build + save + load 全部通过。
 
+## 故障排查
+
+- **下载卡死/i/o timeout**：GitHub Release 与 raw 域名在部分网络不可达。下载器对每个资产按 主源 → gh-proxy.com → ghproxy.net 轮换重试；全部失败时错误会列出尝试过的 URL。`bundle.lock.yaml` 记录实际生效的源。
+- **`sha256 mismatch`**：上游清单与文件不符（串包或损坏）。删除对应文件重跑 fetch；校验未过不会生成镜像。
+- **SSH dial 失败/known_hosts**：节点必须已在 `~/.ssh/known_hosts`（先手动 `ssh` 一次或 `ssh-keyscan`）；密钥需无密码或在 ssh-agent 中。
+- **`passwordless sudo required`**：`spec.ssh.sudo: true` 时要求 `sudo -n` 可用；否则用 root 用户。
+- **节点已属其他集群**：apply/preflight 发现远端 `config.yaml` 的 `server:` 与本集群注册地址不同会拒绝继续，不会自动 reset。
+- **中断续跑**：`.searke/state-<cluster>.json` 记录每节点阶段；重跑 `apply` 自动跳过已完成阶段。版本不一致的状态文件需 `upgrade` 或删除重建。
+- **kubeconfig**：`ssh <user>@<首server> 'sudo cat /etc/rancher/rke2/rke2.yaml'`，把 server 地址换成 `apiAddress`。
+
 ## 已知限制 / 待办
 
 - `image push` 代码已实现但未在真实 registry 验证
