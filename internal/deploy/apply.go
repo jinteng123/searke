@@ -259,6 +259,14 @@ func Apply(ctx context.Context, opts *Options) error {
 			return fmt.Errorf("%s: installed RKE2 %s but bundle carries %s; run `searke upgrade` for version changes",
 				r.node.Name, r.report.InstalledVersion, rb.Meta.Version)
 		}
+		if ns, known := st.Node(r.node.Name); known && st.Done(r.node.Name, StageRunning) && r.report.Service == "" {
+			hint := "remove the node from cluster.yaml and state, or delete the state file to reinstall"
+			if _, local := r.client.(*LocalExecutor); local {
+				hint = "the descriptor uses a local address that resolves to this machine; run on the node itself or use its real address"
+			}
+			return fmt.Errorf("%s: state records stage %q but no RKE2 install found here; refusing to reinstall: %s",
+				r.node.Name, ns.Stage, hint)
+		}
 		if err := st.Mark(r.node.Name, r.role, r.report.Arch, StagePreflight, "ok"); err != nil {
 			return err
 		}

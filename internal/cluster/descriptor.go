@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -11,8 +12,10 @@ import (
 
 // UpdateDescriptor appends nodes to spec.servers/spec.agents in an
 // existing cluster.yaml and optionally updates spec.ssh fields. The
-// document is edited at the yaml.Node level so comments and the user's
-// formatting elsewhere in the file are preserved.
+// document is edited at the yaml.Node level so comments survive, but
+// the whole file is re-encoded: whitespace normalises to two-space
+// indent and flow mappings may reflow (e.g. "{ name: x }" becomes
+// "{name: x}"). The write is atomic via a temp file + rename.
 func UpdateDescriptor(path string, servers, agents []Node, ssh *SSHSpec) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -67,7 +70,23 @@ func UpdateDescriptor(path string, servers, agents []Node, ssh *SSHSpec) error {
 	if err := enc.Close(); err != nil {
 		return err
 	}
-	return os.WriteFile(path, buf.Bytes(), 0o600)
+	// Atomic replace: never leave a half-written descriptor.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cluster-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func mapValue(m *yaml.Node, key string) *yaml.Node {

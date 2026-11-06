@@ -151,8 +151,8 @@ func runSnapshotRestore(file, name string, yes bool) error {
 	return deploy.SnapshotRestore(deployOpts(file), name, yes)
 }
 
-func runUninstall(file string, yes bool) error {
-	return deploy.Uninstall(deployOpts(file), yes)
+func runUninstall(ctx context.Context, file string, yes, ignoreUnreachable bool) error {
+	return deploy.Uninstall(ctx, deployOpts(file), yes, ignoreUnreachable)
 }
 
 func runAdd(ctx context.Context, file string, add *deploy.AddOptions) error {

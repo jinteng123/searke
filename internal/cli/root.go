@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/jint/searke/internal/deploy"
 )
@@ -166,31 +167,47 @@ func newClusterCmds() []*cobra.Command {
 	upgrade.Flags().BoolVar(&skipDrain, "skip-drain", false, "do not cordon/drain nodes during upgrade")
 	upgrade.Flags().BoolVar(&skipSnapshot, "skip-snapshot", false, "do not take a pre-upgrade etcd snapshot")
 
-	var uninstallYes bool
+	var uninstallYes, uninstallIgnore bool
 	uninstall := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove RKE2 from every node in cluster.yaml (upstream killall + uninstall scripts)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUninstall(file, uninstallYes)
+			return runUninstall(cmd.Context(), file, uninstallYes, uninstallIgnore)
 		},
 	}
 	uninstall.Flags().BoolVar(&uninstallYes, "yes", false, "confirm the destructive uninstall")
+	uninstall.Flags().BoolVar(&uninstallIgnore, "ignore-unreachable", false, "still clear local state when some nodes cannot be reached or cleaned")
 
 	var add deploy.AddOptions
+	var addDryRun bool
 	addCmd := &cobra.Command{
 		Use:   "add",
-		Short: "Add servers/agents to an existing cluster (sealos-style: --masters/--nodes)",
+		Short: "Add servers/agents to an existing cluster (aliases: --masters/--nodes)",
+		Long: "Append control-plane or worker addresses to cluster.yaml and converge " +
+			"them via the normal apply pipeline. --masters and --nodes are accepted " +
+			"as sealos-compatible aliases for --servers and --agents.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			add.DryRun = addDryRun
 			return runAdd(cmd.Context(), file, &add)
 		},
 	}
-	addCmd.Flags().StringSliceVar(&add.Servers, "servers", nil, "control-plane addresses to add")
-	addCmd.Flags().StringSliceVar(&add.Servers, "masters", nil, "alias for --servers")
-	addCmd.Flags().StringSliceVar(&add.Agents, "agents", nil, "worker addresses to add")
-	addCmd.Flags().StringSliceVar(&add.Agents, "nodes", nil, "alias for --agents")
+	// Map sealos-style flag names onto the canonical ones so both may be
+	// combined instead of one alias clobbering the other.
+	addCmd.Flags().SetNormalizeFunc(func(f *pflag.FlagSet, name string) pflag.NormalizedName {
+		switch name {
+		case "masters":
+			name = "servers"
+		case "nodes":
+			name = "agents"
+		}
+		return pflag.NormalizedName(name)
+	})
+	addCmd.Flags().StringSliceVar(&add.Servers, "servers", nil, "control-plane addresses to add (alias: --masters)")
+	addCmd.Flags().StringSliceVar(&add.Agents, "agents", nil, "worker addresses to add (alias: --nodes)")
 	addCmd.Flags().StringVar(&add.SSHUser, "ssh-user", "", "set spec.ssh.user in the descriptor (needed by searke run clusters)")
 	addCmd.Flags().StringVar(&add.SSHKey, "ssh-key", "", "set spec.ssh.identityFile")
 	addCmd.Flags().IntVar(&add.SSHPort, "ssh-port", 0, "set spec.ssh.port")
+	addCmd.Flags().BoolVar(&addDryRun, "dry-run", false, "show the plan without modifying cluster.yaml or the nodes")
 
 	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd} {
 		flag(c)

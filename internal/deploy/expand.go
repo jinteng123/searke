@@ -17,11 +17,14 @@ type AddOptions struct {
 	SSHUser string   // fills spec.ssh.user when the descriptor lacks one
 	SSHKey  string   // fills spec.ssh.identityFile
 	SSHPort int      // fills spec.ssh.port
+	DryRun  bool     // show the plan without touching nodes or the file
 }
 
-// Add persists the new nodes into cluster.yaml, then runs Apply so the
-// new members join the existing cluster. The descriptor stays the
-// single source of truth for status/snapshot/uninstall afterwards.
+// Add validates the expanded spec — including connectivity and remote
+// preflight on every listed node — before persisting the new nodes into
+// cluster.yaml, then runs Apply so only the new members converge. The
+// descriptor stays the single source of truth for
+// status/snapshot/uninstall afterwards.
 func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	if len(add.Servers)+len(add.Agents) == 0 {
 		return fmt.Errorf("nothing to add: pass --servers/--agents (aliases --masters/--nodes)")
@@ -76,11 +79,21 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	var sshUpd *cluster.SSHSpec
 	if add.SSHUser != "" || add.SSHKey != "" || add.SSHPort != 0 {
 		sshUpd = &cluster.SSHSpec{User: add.SSHUser, IdentityFile: add.SSHKey, Port: add.SSHPort}
+		conflict := func(flag, old, val string) {
+			if old != "" && old != val {
+				logf(opts, "warning: %s overrides existing %q for ALL nodes", flag, old)
+			}
+		}
 		if add.SSHUser != "" {
+			conflict("--ssh-user", c.Spec.SSH.User, add.SSHUser)
 			c.Spec.SSH.User = add.SSHUser
 		}
 		if add.SSHKey != "" {
+			conflict("--ssh-key", c.Spec.SSH.IdentityFile, add.SSHKey)
 			c.Spec.SSH.IdentityFile = add.SSHKey
+		}
+		if add.SSHPort != 0 && c.Spec.SSH.Port != 0 && c.Spec.SSH.Port != add.SSHPort {
+			logf(opts, "warning: --ssh-port overrides existing %d for ALL nodes", c.Spec.SSH.Port)
 		}
 		if add.SSHPort != 0 {
 			c.Spec.SSH.Port = add.SSHPort
@@ -98,6 +111,19 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 		}
 	}
 
+	// Preflight before persistence: the expanded spec must connect and
+	// pass node checks, otherwise the file is left untouched so a typo
+	// never poisons the descriptor that every other command reads.
+	opts.Cluster = c
+	if add.DryRun {
+		return Plan(opts)
+	}
+	rts, err := connectAll(c, opts)
+	if err != nil {
+		return fmt.Errorf("preflight failed, cluster.yaml left unchanged: %w", err)
+	}
+	closeAll(rts)
+
 	if err := cluster.UpdateDescriptor(opts.ClusterFile, addServers, addAgents, sshUpd); err != nil {
 		return fmt.Errorf("update %s: %w", opts.ClusterFile, err)
 	}
@@ -107,7 +133,5 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	for _, n := range addAgents {
 		logf(opts, "added agent %s (%s) to %s", n.Name, n.Address, opts.ClusterFile)
 	}
-
-	opts.Cluster = c
 	return Apply(ctx, opts)
 }

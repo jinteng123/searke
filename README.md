@@ -50,8 +50,8 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke status -f cluster.yaml` | ✅ 已实现 | 读取本地 apply 状态 + 从首 server 拉取 `kubectl get nodes` 实时视图 |
 | `searke upgrade -f cluster.yaml` | ✅ 已实现 | 滚动升级：server 逐台先于 agent；升级前自动 etcd 快照 + drain/uncordon（可 `--skip-*` 关闭，单节点集群自动跳过 drain）；拒绝降级与跨 minor 跳跃；`apply` 检测到版本漂移会引导改用本命令 |
 | `searke snapshot save/list/pull/restore` | ✅ 已实现 | etcd 快照工作流：首 server 上 `rke2 etcd-snapshot save`、列举、拉回本地；restore 按 RKE2 HA 流程停全部 server → 首 server cluster-reset → 其余 server 清 db 重入（需 `--yes`） |
-| `searke uninstall -f cluster.yaml --yes` | ✅ 已实现 | 从所有节点移除 RKE2：复用上游 `rke2-killall.sh` + `rke2-uninstall.sh`（agent 先于 server），清理 `/opt/searke` 与本地状态文件；需 `--yes` 确认 |
-| `searke add --nodes/--masters <ip>...` | ✅ 已实现 | sealos 风格扩容：`--agents`/`--servers` 加 worker/master（别名 `--nodes`/`--masters`）；地址写回 cluster.yaml（保留注释）后走正常 apply，已有节点自动跳过；`--ssh-user/--ssh-key/--ssh-port` 可补全 `searke run` 集群缺失的 ssh 配置；server 总数仍受 etcd 奇数校验约束 |
+| `searke uninstall -f cluster.yaml --yes` | ✅ 已实现 | 从所有节点移除 RKE2：探测 `/usr/local/bin` 与 `/opt/rke2/bin` 的上游卸载脚本（agent 先于 server），**卸载后校验残留**而非只看退出码；逐节点容错——部分失败时继续卸载其余节点、保留状态并返回非零，`--ignore-unreachable` 可强制清状态；需 `--yes` 确认 |
+| `searke add --nodes/--masters <ip>...` | ✅ 已实现 | sealos 风格扩容：`--agents`/`--servers` 加 worker/master（`--nodes`/`--masters` 为真别名可混用）；**先对扩展后拓扑连节点做 preflight，全部通过才写回** cluster.yaml（地址写错不会污染描述文件）；`--dry-run` 只看计划；`--ssh-user/--ssh-key/--ssh-port` 补全 `searke run` 集群的 ssh 配置（与已有值冲突会警告）；server 总数仍受 etcd 奇数校验约束 |
 
 ## 快速流程
 
