@@ -454,7 +454,7 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 		logf(opts, "  %s: run install.sh (%s)", name, r.role)
 		installCmd := fmt.Sprintf(
 			"INSTALL_RKE2_ARTIFACT_PATH=%s INSTALL_RKE2_TYPE=%s INSTALL_RKE2_SKIP_START=true INSTALL_RKE2_VERSION=%s sh %s",
-			shellQuote(RemoteArtifacts), r.role, shellQuote(c.Spec.RKE2.Version), RemoteRoot+"/install.sh")
+			shellQuote(RemoteArtifacts), r.role, shellQuote(st.Version), RemoteRoot+"/install.sh")
 		res, err := r.client.RunSudo(installCmd)
 		if err != nil {
 			return fmt.Errorf("%s: install.sh: %w", name, err)
