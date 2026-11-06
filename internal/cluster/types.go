@@ -51,12 +51,12 @@ type RKE2Spec struct {
 
 // Spec is the cluster.yaml spec section.
 type Spec struct {
-	RKE2       RKE2Spec            `yaml:"rke2" json:"rke2"`
-	SSH        SSHSpec             `yaml:"ssh" json:"ssh"`
-	Endpoints  Endpoints           `yaml:"endpoints" json:"endpoints"`
-	Servers    []Node              `yaml:"servers" json:"servers"`
-	Agents     []Node              `yaml:"agents,omitempty" json:"agents,omitempty"`
-	RKE2Config map[string]any      `yaml:"rke2Config,omitempty" json:"rke2Config,omitempty"`
+	RKE2       RKE2Spec       `yaml:"rke2" json:"rke2"`
+	SSH        SSHSpec        `yaml:"ssh" json:"ssh"`
+	Endpoints  Endpoints      `yaml:"endpoints" json:"endpoints"`
+	Servers    []Node         `yaml:"servers" json:"servers"`
+	Agents     []Node         `yaml:"agents,omitempty" json:"agents,omitempty"`
+	RKE2Config map[string]any `yaml:"rke2Config,omitempty" json:"rke2Config,omitempty"`
 }
 
 // Cluster is the parsed cluster.yaml document.

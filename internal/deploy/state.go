@@ -52,13 +52,13 @@ type HistoryEntry struct {
 // State is the local apply state file. It contains no secrets: the
 // node token is never persisted here.
 type State struct {
-	Cluster     string              `json:"cluster"`
-	Bundle      string              `json:"bundle"`
-	Version     string              `json:"version"`
-	CNI         string              `json:"cni"`
-	FirstServer string              `json:"firstServer"`
+	Cluster     string               `json:"cluster"`
+	Bundle      string               `json:"bundle"`
+	Version     string               `json:"version"`
+	CNI         string               `json:"cni"`
+	FirstServer string               `json:"firstServer"`
 	Nodes       map[string]NodeState `json:"nodes"`
-	History     []HistoryEntry      `json:"history"`
+	History     []HistoryEntry       `json:"history"`
 	path        string
 }
 

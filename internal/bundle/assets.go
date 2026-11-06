@@ -28,7 +28,6 @@ var ReleaseMirrors = []string{
 	"https://ghproxy.net/%s",
 }
 
-
 // apiContentsURL fetches a repo file through the GitHub contents API.
 // The JSON response carries base64 content — downloadOnce decodes it.
 func apiContentsURL(version, path string) string {

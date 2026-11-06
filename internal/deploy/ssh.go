@@ -30,9 +30,9 @@ type SSHConfig struct {
 // Client is an SSH connection to a node.
 type Client struct {
 	*ssh.Client
-	cfg        SSHConfig
-	addr       string
-	agentConn  io.Closer // ssh-agent socket, closed with the client
+	cfg       SSHConfig
+	addr      string
+	agentConn io.Closer // ssh-agent socket, closed with the client
 }
 
 var _ Executor = (*Client)(nil)

@@ -51,10 +51,21 @@ func localIPs() []net.IP {
 	return out
 }
 
-// PrimaryIPv4 returns the first non-loopback, non-link-local global
-// IPv4 address bound to this machine, or "127.0.0.1" when none exists.
-// Used as the default registration/API address for single-node installs.
+// PrimaryIPv4 returns the IPv4 address other nodes would use to reach
+// this machine: the source address of the default route (matching how
+// RKE2 picks its node-ip), falling back to the first global IPv4 on any
+// interface, then "127.0.0.1".
 func PrimaryIPv4() string {
+	// UDP dial sends no packets; it only resolves the route, giving the
+	// address on the default-route interface even with several NICs.
+	if conn, err := net.Dial("udp", "198.51.100.1:80"); err == nil {
+		defer conn.Close()
+		if ua, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			if v4 := ua.IP.To4(); v4 != nil {
+				return v4.String()
+			}
+		}
+	}
 	for _, ip := range localIPs() {
 		if v4 := ip.To4(); v4 != nil && v4.IsGlobalUnicast() && !v4.IsLinkLocalUnicast() {
 			return v4.String()
@@ -78,6 +89,15 @@ func SanitizeNodeName(s string) string {
 		}
 	}
 	out := strings.Trim(string(b), "-.")
+	// Each dot-separated label must also start and end with an
+	// alphanumeric: "a_.b" -> "a-.b" is still invalid.
+	var labels []string
+	for _, lbl := range strings.Split(out, ".") {
+		if lbl = strings.Trim(lbl, "-"); lbl != "" {
+			labels = append(labels, lbl)
+		}
+	}
+	out = strings.Join(labels, ".")
 	if out == "" {
 		out = "node"
 	}

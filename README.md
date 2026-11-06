@@ -23,10 +23,15 @@ sudo searke run ./rke2-v1.36.5-rke2r1-multiarch.oci.tar
 ```
 
 行为：唯一节点为本机（address 固定 127.0.0.1 → 本地执行）；registration/API
-地址取本机主网卡 IPv4（`--address` 可覆盖）；节点名取 hostname（DNS-1123 化）；
+地址取默认路由所在网卡的 IPv4（`--address` 可覆盖）；节点名取 hostname（DNS-1123 化）；
 cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 状态写入
 `~/.searke/<name>/`，之后可以直接 `searke status|snapshot|apply -f` 复用或续跑。
-非 root 运行需要 `sudo -n` 可用。
+
+- `sudo searke run` 时 HOME 解析为 `/root`，产物实际在 `/root/.searke/<name>/`
+- 重跑 `searke run` 会**复用**已生成的 cluster.yaml：flags 与记录不符时报错而非悄悄覆盖；
+  只有 bundle 参数允许变化（用于换 bundle 后 converge，版本变化会引导走 `upgrade`）
+- `--dry-run` 只生成 cluster.yaml 并执行 plan（preflight + 动作列表），不做任何变更
+- 非 root 运行需要 `sudo -n` 可用（preflight 会校验真实 uid=0，而非仅命令可执行）
 
 ## 命令一览
 
@@ -38,12 +43,12 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke image push <ref> --from <oci-dir>` | ✅ 已实现 | `remote.WriteIndex` 推送整个 index，使用默认 docker keychain 认证 |
 | `searke image save <ref-or-dir> -o <tar>` | ✅ 已实现并真实验证 | 导出为含 OCI Layout 的 tar 归档（离线搬运） |
 | `searke image load <tar> -o <oci-dir>` | ✅ 已实现并真实验证 | 导入本地归档，还原 OCI Layout |
-| `searke run <bundle>` | ✅ 已实现 | 单机安装（仿 `sealos run --single`）：合成单节点集群走本地执行，生成 cluster.yaml 于 `~/.searke/<name>/` |
+| `searke run <bundle>` | ✅ 已实现 | 单机安装（仿 `sealos run --single`）：合成单节点集群走本地执行，生成 cluster.yaml 于 `~/.searke/<name>/`；重跑复用文件；`--dry-run` 仅生成 + plan |
 | `searke validate -f cluster.yaml` | ✅ 已实现 | 本地 schema + bundle 注解一致性 + SSH 连接 + 远端 preflight（只读） |
 | `searke plan -f cluster.yaml` | ✅ 已实现 | validate 之上列出每个节点将执行的动作，不做远端变更 |
 | `searke apply -f cluster.yaml` | ✅ 已实现 | 分阶段安装：preflight → 按节点架构分发 payload → 写 config.yaml → install.sh → 首 server → 其他 server → agent → Ready；阶段落盘可断点续跑，已属其他集群的节点会拒绝重置 |
 | `searke status -f cluster.yaml` | ✅ 已实现 | 读取本地 apply 状态 + 从首 server 拉取 `kubectl get nodes` 实时视图 |
-| `searke upgrade -f cluster.yaml` | ✅ 已实现 | 滚动升级：server 逐台先于 agent；升级前自动 etcd 快照 + drain/uncordon（可 `--skip-*` 关闭）；拒绝降级与跨 minor 跳跃；`apply` 检测到版本漂移会引导改用本命令 |
+| `searke upgrade -f cluster.yaml` | ✅ 已实现 | 滚动升级：server 逐台先于 agent；升级前自动 etcd 快照 + drain/uncordon（可 `--skip-*` 关闭，单节点集群自动跳过 drain）；拒绝降级与跨 minor 跳跃；`apply` 检测到版本漂移会引导改用本命令 |
 | `searke snapshot save/list/pull/restore` | ✅ 已实现 | etcd 快照工作流：首 server 上 `rke2 etcd-snapshot save`、列举、拉回本地；restore 按 RKE2 HA 流程停全部 server → 首 server cluster-reset → 其余 server 清 db 重入（需 `--yes`） |
 
 ## 快速流程

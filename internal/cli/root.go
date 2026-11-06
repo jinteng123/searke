@@ -133,6 +133,7 @@ func newClusterCmds() []*cobra.Command {
 		RunE:  func(cmd *cobra.Command, args []string) error { return runStatus(file) },
 	}
 	var ro deploy.RunOptions
+	var dryRun bool
 	run := &cobra.Command{
 		Use:   "run <bundle>",
 		Short: "Install a single-node cluster on this machine (no cluster.yaml needed)",
@@ -142,16 +143,17 @@ func newClusterCmds() []*cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ro.Bundle = args[0]
-			return runSingle(cmd.Context(), ro)
+			return runSingle(cmd.Context(), ro, dryRun)
 		},
 	}
 	run.Flags().StringVar(&ro.Name, "name", "", "cluster name (default searke-<hostname>)")
 	run.Flags().StringVar(&ro.NodeName, "node-name", "", "Kubernetes node name (default hostname)")
 	run.Flags().StringVar(&ro.Address, "address", "", "registration/API IP (default primary IPv4)")
-	run.Flags().StringVar(&ro.CNI, "cni", "canal", "CNI the bundle was built with")
-	run.Flags().StringVar(&ro.ClusterCIDR, "cluster-cidr", "10.42.0.0/16", "pod network CIDR")
-	run.Flags().StringVar(&ro.ServiceCIDR, "service-cidr", "10.43.0.0/16", "service network CIDR")
+	run.Flags().StringVar(&ro.CNI, "cni", "", "CNI the bundle was built with (default canal)")
+	run.Flags().StringVar(&ro.ClusterCIDR, "cluster-cidr", "", "pod network CIDR (default 10.42.0.0/16)")
+	run.Flags().StringVar(&ro.ServiceCIDR, "service-cidr", "", "service network CIDR (default 10.43.0.0/16)")
 	run.Flags().StringVar(&ro.HomeDir, "home", "", "dir for generated cluster.yaml and state (default ~/.searke/<name>)")
+	run.Flags().BoolVar(&dryRun, "dry-run", false, "generate cluster.yaml and run plan only; make no changes")
 
 	var skipDrain, skipSnapshot bool
 	upgrade := &cobra.Command{

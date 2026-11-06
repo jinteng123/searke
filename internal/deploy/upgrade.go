@@ -115,6 +115,13 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 		}
 	}
 
+	// A single-node cluster has nowhere to evacuate pods; draining it
+	// only stalls the upgrade. Skip it unless the user asked anyway.
+	singleNode := len(order) == 1
+	if singleNode && !uo.SkipDrain {
+		logf(opts, "single-node cluster: skipping drain (pods have nowhere to evacuate)")
+	}
+
 	for _, r := range order {
 		if r.report.InstalledVersion == target {
 			logf(opts, "  %s: already %s, skipping", r.node.Name, target)
@@ -123,7 +130,7 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 		if r.report.Service == "" {
 			return fmt.Errorf("%s: no existing rke2 install found; run `searke apply` instead", r.node.Name)
 		}
-		if !uo.SkipDrain {
+		if !uo.SkipDrain && !singleNode {
 			if err := drainNode(first, r, true, opts); err != nil {
 				return fmt.Errorf("%s: drain failed (use --skip-drain to bypass): %w", r.node.Name, err)
 			}
@@ -144,7 +151,7 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 				return fmt.Errorf("%s: rke2-server did not come back: %w", r.node.Name, err)
 			}
 		}
-		if !uo.SkipDrain {
+		if !uo.SkipDrain && !singleNode {
 			if err := drainNode(first, r, false, opts); err != nil {
 				logf(opts, "  warning %s: uncordon failed: %v", r.node.Name, err)
 			}
@@ -222,4 +229,3 @@ func upgradeNode(ctx context.Context, c *cluster.Cluster, rb *ResolvedBundle, r 
 	}
 	return nil
 }
-

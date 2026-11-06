@@ -170,9 +170,9 @@ type LockAsset struct {
 
 // Lock is the generated bundle.lock.yaml content.
 type Lock struct {
-	APIVersion string      `yaml:"apiVersion" json:"apiVersion"`
-	Kind       string      `yaml:"kind" json:"kind"`
-	Spec       LockSpec    `yaml:"spec" json:"spec"`
+	APIVersion string   `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string   `yaml:"kind" json:"kind"`
+	Spec       LockSpec `yaml:"spec" json:"spec"`
 }
 
 // LockSpec records the exact inputs used to build a bundle.

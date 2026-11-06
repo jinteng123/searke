@@ -109,8 +109,8 @@ func TestVerifyPlatform(t *testing.T) {
 		}
 	}
 	files := map[string][]byte{
-		"rke2.linux-amd64.tar.gz":            []byte("binary-tar"),
-		"rke2-images.linux-amd64.tar.zst":    []byte("images-tar"),
+		"rke2.linux-amd64.tar.gz":         []byte("binary-tar"),
+		"rke2-images.linux-amd64.tar.zst": []byte("images-tar"),
 	}
 	for n, c := range files {
 		if err := os.WriteFile(filepath.Join(dir, n), c, 0o644); err != nil {

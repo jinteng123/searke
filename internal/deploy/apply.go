@@ -125,11 +125,15 @@ func connectAll(c *cluster.Cluster, opts *Options) ([]*nodeRuntime, error) {
 	var runtimes []*nodeRuntime
 	for _, n := range c.AllNodes() {
 		role := c.RoleOf(n.Name)
-		logf(opts, "  connect %s (%s)", n.Name, n.Address)
 		cl, err := Connect(n.Address, sshCfg)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", n.Name, err)
 		}
+		mode := "ssh"
+		if _, ok := cl.(*LocalExecutor); ok {
+			mode = "local exec"
+		}
+		logf(opts, "  connect %s (%s, %s)", n.Name, n.Address, mode)
 		rep, err := Preflight(cl, n.Name)
 		if err != nil {
 			cl.Close()
@@ -220,7 +224,11 @@ func Plan(opts *Options) error {
 		if known {
 			acts = append(acts, "recorded stage: "+ns.Stage)
 		}
-		logf(opts, "  %s (%s, %s): %s", r.node.Name, r.role, r.node.Address, strings.Join(acts, "; "))
+		mode := "ssh"
+		if _, ok := r.client.(*LocalExecutor); ok {
+			mode = "local"
+		}
+		logf(opts, "  %s (%s, %s, %s): %s", r.node.Name, r.role, r.node.Address, mode, strings.Join(acts, "; "))
 	}
 	logf(opts, "no remote changes were made")
 	return nil
@@ -554,7 +562,7 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 	if !st.Done(name, StageRunning) {
 		svc := "rke2-" + r.role
 		logf(opts, "  %s: enable+start %s", name, svc)
-		res, err := r.client.RunSudo("systemctl enable "+svc+" && systemctl start "+svc)
+		res, err := r.client.RunSudo("systemctl enable " + svc + " && systemctl start " + svc)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}

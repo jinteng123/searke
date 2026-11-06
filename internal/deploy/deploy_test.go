@@ -174,6 +174,53 @@ func TestSingleNodeCluster(t *testing.T) {
 	}
 }
 
+func TestSingleNodeClusterRerun(t *testing.T) {
+	home := t.TempDir()
+	c, file, err := SingleNodeCluster(RunOptions{Bundle: "./x.oci", HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(file)
+
+	// rerun with the same bundle reuses the file untouched
+	c2, _, err := SingleNodeCluster(RunOptions{Bundle: "./x.oci", HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(file)
+	if string(before) != string(after) || c2.Spec.RKE2.Bundle != "./x.oci" {
+		t.Fatal("rerun must reuse the generated file unchanged")
+	}
+	if c2.Name() != c.Name() {
+		t.Fatal("rerun returned a different cluster")
+	}
+
+	// a new bundle is the one allowed change: file gets updated
+	c3, _, err := SingleNodeCluster(RunOptions{Bundle: "./y.oci", HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c3.Spec.RKE2.Bundle != "./y.oci" {
+		t.Fatal("rerun with a new bundle must update the file")
+	}
+	reloaded, _ := cluster.Load(file)
+	if reloaded.Spec.RKE2.Bundle != "./y.oci" {
+		t.Fatal("file was not updated to the new bundle")
+	}
+
+	// a conflicting flag is rejected rather than silently applied
+	if _, _, err := SingleNodeCluster(RunOptions{Bundle: "./y.oci", HomeDir: home, ClusterCIDR: "10.99.0.0/16"}); err == nil {
+		t.Fatal("conflicting --cluster-cidr on rerun must fail")
+	}
+	if _, _, err := SingleNodeCluster(RunOptions{Bundle: "./y.oci", HomeDir: home, Address: "10.9.9.9"}); err == nil {
+		t.Fatal("conflicting --address on rerun must fail")
+	}
+	// matching flags still pass
+	if _, _, err := SingleNodeCluster(RunOptions{Bundle: "./y.oci", HomeDir: home, ClusterCIDR: "10.42.0.0/16"}); err != nil {
+		t.Fatalf("matching --cluster-cidr must pass: %v", err)
+	}
+}
+
 func TestSanitizeAndPrimaryIP(t *testing.T) {
 	if got := cluster.SanitizeNodeName("My_Server.Host"); got != "my-server.host" {
 		t.Fatalf("sanitize = %q", got)

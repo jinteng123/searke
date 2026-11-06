@@ -183,9 +183,17 @@ func (l *LocalExecutor) Close() error { return nil }
 func (l *LocalExecutor) Addr() string { return l.addr }
 
 // copyFile streams src to dst, creating parents and applying mode.
+// On the same filesystem it hard-links instead of copying — the
+// ~800 MiB payload then costs zero extra I/O on local execution.
 func copyFile(src, dst string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
+	}
+	// Replace any stale target, then try a hard link — a failed link
+	// (cross-device) just falls through to the copy below.
+	os.Remove(dst)
+	if err := os.Link(src, dst); err == nil {
+		return os.Chmod(dst, mode)
 	}
 	in, err := os.Open(src)
 	if err != nil {

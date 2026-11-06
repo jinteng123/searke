@@ -35,17 +35,17 @@ func TestValidateOK(t *testing.T) {
 
 func TestValidateRejects(t *testing.T) {
 	cases := map[string]func(*Cluster){
-		"bad apiVersion":   func(c *Cluster) { c.APIVersion = "v2" },
-		"even servers":     func(c *Cluster) { c.Spec.Servers = c.Spec.Servers[:2] },
-		"no servers":       func(c *Cluster) { c.Spec.Servers = nil },
-		"no reg address":   func(c *Cluster) { c.Spec.Endpoints.RegistrationAddress = "" },
-		"bad reg address":  func(c *Cluster) { c.Spec.Endpoints.RegistrationAddress = "10.0.0.100" },
-		"dup node name":    func(c *Cluster) { c.Spec.Agents = append(c.Spec.Agents, Node{Name: "m1", Address: "10.0.0.99"}) },
-		"managed server":   func(c *Cluster) { c.Spec.RKE2Config = map[string]any{"server": "x"} },
-		"managed token":    func(c *Cluster) { c.Spec.RKE2Config = map[string]any{"token": "x"} },
-		"no ssh user":      func(c *Cluster) { c.Spec.SSH.User = "" },
-		"no bundle":        func(c *Cluster) { c.Spec.RKE2.Bundle = "" },
-		"empty node name":  func(c *Cluster) { c.Spec.Servers[0].Name = "" },
+		"bad apiVersion":  func(c *Cluster) { c.APIVersion = "v2" },
+		"even servers":    func(c *Cluster) { c.Spec.Servers = c.Spec.Servers[:2] },
+		"no servers":      func(c *Cluster) { c.Spec.Servers = nil },
+		"no reg address":  func(c *Cluster) { c.Spec.Endpoints.RegistrationAddress = "" },
+		"bad reg address": func(c *Cluster) { c.Spec.Endpoints.RegistrationAddress = "10.0.0.100" },
+		"dup node name":   func(c *Cluster) { c.Spec.Agents = append(c.Spec.Agents, Node{Name: "m1", Address: "10.0.0.99"}) },
+		"managed server":  func(c *Cluster) { c.Spec.RKE2Config = map[string]any{"server": "x"} },
+		"managed token":   func(c *Cluster) { c.Spec.RKE2Config = map[string]any{"token": "x"} },
+		"no ssh user":     func(c *Cluster) { c.Spec.SSH.User = "" },
+		"no bundle":       func(c *Cluster) { c.Spec.RKE2.Bundle = "" },
+		"empty node name": func(c *Cluster) { c.Spec.Servers[0].Name = "" },
 	}
 	for name, mutate := range cases {
 		c := valid()

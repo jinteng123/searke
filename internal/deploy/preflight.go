@@ -10,13 +10,13 @@ import (
 
 // PreflightReport is the collected remote state of one node.
 type PreflightReport struct {
-	Hostname     string
-	Arch         string // normalized: amd64 | arm64
-	OS           string // distro id
-	OSVersion    string
-	HasRKE2      bool   // /var/lib/rancher/rke2 exists
-	Service      string // rke2-server | rke2-agent | ""
-	ServiceState string // systemd is-active output
+	Hostname         string
+	Arch             string // normalized: amd64 | arm64
+	OS               string // distro id
+	OSVersion        string
+	HasRKE2          bool   // /var/lib/rancher/rke2 exists
+	Service          string // rke2-server | rke2-agent | ""
+	ServiceState     string // systemd is-active output
 	ConfigExists     bool
 	ExistingURL      string // server: line in existing config.yaml, if any
 	InstalledVersion string // rke2 --version, if installed
@@ -41,7 +41,7 @@ func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 	}
 	parts := strings.Fields(out)
 	if len(parts) < 2 || parts[0] != "Linux" {
-		return nil, fmt.Errorf("%s: unsupported OS %q (need Linux)", nodeName, out)
+		return nil, fmt.Errorf("%s: unsupported OS %q (need Linux)", nodeName, parts[0])
 	}
 	switch parts[1] {
 	case "x86_64":
@@ -74,9 +74,12 @@ func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 			fmt.Sprintf("Ubuntu %s is not the validated version (22.04); proceeding anyway", rep.OSVersion))
 	}
 
-	res, err := c.RunSudo("true")
+	// Verify a real root shell, not just that the command ran: on a
+	// local executor without sudo, RunSudo degrades to an unprivileged
+	// run and a bare `true` would pass.
+	res, err := c.RunSudo(`test "$(id -u)" -eq 0`)
 	if err != nil || res.ExitCode != 0 {
-		return nil, fmt.Errorf("%s: passwordless sudo required (or spec.ssh.user=root)", nodeName)
+		return nil, fmt.Errorf("%s: root privileges required: use spec.ssh.user=root, passwordless sudo (sudo -n), or run searke with sudo on the node itself", nodeName)
 	}
 
 	// Disk check is read-only: pick the deepest existing ancestor.

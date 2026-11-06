@@ -20,7 +20,7 @@
 
 **本地执行（local execution，仿 sealos）：** 节点 `address` 指向本机时 `Connect` 返回 `LocalExecutor` 而非 SSH client——命令经 `sh -c` 直跑、文件分发变成本地拷贝，apply/upgrade/snapshot/status 全部生效且编排代码零改动。探测范围：loopback、`localhost`、本机 hostname、本机网卡地址，与远端 SSH 节点可在同一集群混用。root 运行 searke 时特权操作直跑；非 root + `ssh.sudo: true` 走 `sudo -n` 与 staging 目录，语义与 SSH 路径一致。全部节点为本机地址时 `spec.ssh.user` 可省略。
 
-**`searke run`（仿 `sealos run --single`）：** 免 cluster.yaml 的单机安装入口——合成单节点集群（本机 127.0.0.1 → 本地执行）、主网卡 IPv4 作 registration/apiAddress、hostname 作节点名，生成的 cluster.yaml 与状态写入 `~/.searke/<name>/` 供 `status`/`snapshot`/续跑复用。
+**`searke run`（仿 `sealos run --single`）：** 免 cluster.yaml 的单机安装入口——合成单节点集群（本机 127.0.0.1 → 本地执行）、默认路由网卡 IPv4 作 registration/apiAddress、hostname 作节点名；生成的 cluster.yaml 与状态写入 `~/.searke/<name>/` 供 `status`/`snapshot`/续跑复用；重跑复用已生成文件（flags 冲突报错，仅 bundle 可变更）；`--dry-run` 仅生成文件并执行 plan。连接日志标注 `ssh`/`local exec`；单节点集群 upgrade 自动跳过 drain；preflight 的 root 校验改为实测 uid=0。
 
 ## 1. 背景与目标
 
