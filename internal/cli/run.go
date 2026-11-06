@@ -32,11 +32,11 @@ func runBundleVerify(dir string) error {
 	return nil
 }
 
-func runImageBuild(bundleDir, tag, outDir string) error {
+func runImageBuild(bundleDir, tag, outDir, comp string) error {
 	if outDir == "" {
 		outDir = strings.TrimSuffix(bundleDir, "/") + "-oci"
 	}
-	meta, err := ociimg.Build(bundleDir, outDir, tag)
+	meta, err := ociimg.Build(bundleDir, outDir, tag, comp)
 	if err != nil {
 		return err
 	}

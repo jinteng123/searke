@@ -59,17 +59,18 @@ func newBundleCmd() *cobra.Command {
 func newImageCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "image", Short: "Build and distribute multi-arch OCI images"}
 
-	var tag, outDir string
+	var tag, outDir, comp string
 	build := &cobra.Command{
 		Use:   "build <bundle-dir>",
 		Short: "Build an OCI Image Index (amd64+arm64 sub-images) from a verified bundle",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runImageBuild(args[0], tag, outDir)
+			return runImageBuild(args[0], tag, outDir, comp)
 		},
 	}
 	build.Flags().StringVarP(&tag, "tag", "t", "", "image reference recorded in annotations (optional)")
 	build.Flags().StringVarP(&outDir, "output-dir", "o", "", "OCI layout output dir (default <bundle-dir>-oci)")
+	build.Flags().StringVar(&comp, "compression", "zstd", "layer compression: zstd|gzip (gzip for registries that reject zstd blobs, e.g. ACR)")
 
 	var from string
 	var pushInsecure bool

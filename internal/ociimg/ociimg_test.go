@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/jint/searke/internal/bundle"
 )
 
@@ -56,7 +57,7 @@ spec:
 func TestBuildAndExtractRoundTrip(t *testing.T) {
 	src := makeBundleDir(t, "v1.36.5+rke2r1", "amd64", "arm64")
 	out := filepath.Join(t.TempDir(), "oci")
-	meta, err := Build(src, out, "")
+	meta, err := Build(src, out, "", "")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -107,10 +108,47 @@ func TestBuildAndExtractRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBuildGzipCompression(t *testing.T) {
+	src := makeBundleDir(t, "v1.36.5+rke2r1", "amd64")
+	out := filepath.Join(t.TempDir(), "oci")
+	if _, err := Build(src, out, "", "gzip"); err != nil {
+		t.Fatal(err)
+	}
+	s := Source{Path: out}
+	ii, cleanup, err := s.OpenIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	im, err := ii.IndexManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := ii.Image(im.Manifests[0].Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers, err := img.Layers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt, _ := layers[0].MediaType(); mt != types.OCILayer {
+		t.Fatalf("layer media type = %s, want %s (gzip)", mt, types.OCILayer)
+	}
+	dest := t.TempDir()
+	if err := ExtractPayload(ii, bundle.Platform{OS: "linux", Arch: "amd64"}, dest); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Build(src, filepath.Join(t.TempDir(), "oci2"), "", "lz4"); err == nil {
+		t.Fatal("unknown compression accepted")
+	}
+}
+
 func TestSaveLoadRoundTrip(t *testing.T) {
 	src := makeBundleDir(t, "v1.36.5+rke2r1", "amd64")
 	layoutDir := filepath.Join(t.TempDir(), "oci")
-	if _, err := Build(src, layoutDir, ""); err != nil {
+	if _, err := Build(src, layoutDir, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	s := Source{Path: layoutDir}
@@ -145,11 +183,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 
 func TestBuildReproducible(t *testing.T) {
 	src := makeBundleDir(t, "v1.36.5+rke2r1", "amd64")
-	m1, err := Build(src, filepath.Join(t.TempDir(), "a"), "")
+	m1, err := Build(src, filepath.Join(t.TempDir(), "a"), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m2, err := Build(src, filepath.Join(t.TempDir(), "b"), "")
+	m2, err := Build(src, filepath.Join(t.TempDir(), "b"), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
