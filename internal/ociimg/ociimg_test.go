@@ -190,15 +190,15 @@ func TestPrepareLayoutDir(t *testing.T) {
 
 func TestParseSource(t *testing.T) {
 	d := t.TempDir()
-	s, err := ParseSource(d)
+	s, err := ParseSource(d, false)
 	if err != nil || s.Path != d {
 		t.Fatalf("local dir: %+v %v", s, err)
 	}
-	s, err = ParseSource("registry.example.com/searke/rke2:v1.36.5-rke2r1")
+	s, err = ParseSource("registry.example.com/searke/rke2:v1.36.5-rke2r1", false)
 	if err != nil || s.Ref == "" {
 		t.Fatalf("registry ref: %+v %v", s, err)
 	}
-	if _, err := ParseSource("not a ref at all:::"); err == nil {
+	if _, err := ParseSource("not a ref at all:::", false); err == nil {
 		t.Fatal("garbage should fail")
 	}
 }

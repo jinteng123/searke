@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -70,27 +72,31 @@ func newImageCmd() *cobra.Command {
 	build.Flags().StringVarP(&outDir, "output-dir", "o", "", "OCI layout output dir (default <bundle-dir>-oci)")
 
 	var from string
+	var pushInsecure bool
 	push := &cobra.Command{
 		Use:   "push <ref>",
 		Short: "Push an OCI layout directory to a registry",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runImagePush(from, args[0])
+			return runImagePush(from, args[0], pushInsecure)
 		},
 	}
 	push.Flags().StringVar(&from, "from", "", "OCI layout dir to push (required)")
+	push.Flags().BoolVar(&pushInsecure, "insecure", false, "use plain HTTP for this registry")
 	push.MarkFlagRequired("from")
 
 	var out string
+	var saveInsecure bool
 	save := &cobra.Command{
 		Use:   "save <ref-or-layout-dir>",
 		Short: "Export an image index to a .oci.tar archive (air-gap transport)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runImageSave(args[0], out)
+			return runImageSave(args[0], out, saveInsecure)
 		},
 	}
 	save.Flags().StringVarP(&out, "output", "o", "", "output tar path (required)")
+	save.Flags().BoolVar(&saveInsecure, "insecure", false, "use plain HTTP for this registry")
 	save.MarkFlagRequired("output")
 
 	var loadOut string
@@ -155,6 +161,7 @@ func newClusterCmds() []*cobra.Command {
 	run.Flags().StringVar(&ro.ServiceCIDR, "service-cidr", "", "service network CIDR (default 10.43.0.0/16)")
 	run.Flags().StringVar(&ro.HomeDir, "home", "", "dir for generated cluster.yaml and state (default ~/.searke/<name>)")
 	run.Flags().BoolVar(&dryRun, "dry-run", false, "generate cluster.yaml and run plan only; make no changes")
+	run.Flags().BoolVar(&ro.Insecure, "insecure", false, "reach a registry bundle over plain HTTP (recorded in the generated cluster.yaml)")
 
 	var skipDrain, skipSnapshot bool
 	upgrade := &cobra.Command{
@@ -209,11 +216,47 @@ func newClusterCmds() []*cobra.Command {
 	addCmd.Flags().IntVar(&add.SSHPort, "ssh-port", 0, "set spec.ssh.port")
 	addCmd.Flags().BoolVar(&addDryRun, "dry-run", false, "show the plan without modifying cluster.yaml or the nodes")
 
+	var loginUser, loginPass string
+	var loginInsecure, passStdin bool
+	login := &cobra.Command{
+		Use:   "login <registry>",
+		Short: "Store registry credentials (docker-compatible ~/.docker/config.json)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pass := loginPass
+			if passStdin {
+				b, err := io.ReadAll(cmd.InOrStdin())
+				if err != nil {
+					return err
+				}
+				pass = strings.TrimRight(string(b), "\r\n")
+			}
+			if pass == "" {
+				return fmt.Errorf("pass --password or --password-stdin")
+			}
+			return runLogin(args[0], loginUser, pass, loginInsecure)
+		},
+	}
+	login.Flags().StringVarP(&loginUser, "username", "u", "", "registry username (required)")
+	login.Flags().StringVarP(&loginPass, "password", "p", "", "registry password")
+	login.Flags().BoolVar(&passStdin, "password-stdin", false, "read the password from stdin")
+	login.Flags().BoolVar(&loginInsecure, "insecure", false, "mark the registry plain-HTTP (persisted for all commands)")
+	login.MarkFlagRequired("username")
+
+	logout := &cobra.Command{
+		Use:   "logout <registry>",
+		Short: "Remove stored registry credentials",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runLogout(args[0])
+		},
+	}
+
 	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd} {
 		flag(c)
 	}
 	snap := newSnapshotCmd(&file)
-	return []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd, run, snap}
+	return []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd, run, snap, login, logout}
 }
 
 func newSnapshotCmd(file *string) *cobra.Command {

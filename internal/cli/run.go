@@ -50,16 +50,16 @@ func runImageBuild(bundleDir, tag, outDir string) error {
 	return nil
 }
 
-func runImagePush(from, ref string) error {
-	if err := ociimg.Push(from, ref); err != nil {
+func runImagePush(from, ref string, insecure bool) error {
+	if err := ociimg.Push(from, ref, insecure); err != nil {
 		return err
 	}
 	logf("pushed %s -> %s", from, ref)
 	return nil
 }
 
-func runImageSave(src, out string) error {
-	s, err := ociimg.ParseSource(src)
+func runImageSave(src, out string, insecure bool) error {
+	s, err := ociimg.ParseSource(src, insecure)
 	if err != nil {
 		return err
 	}
@@ -157,4 +157,24 @@ func runUninstall(ctx context.Context, file string, yes, ignoreUnreachable bool)
 
 func runAdd(ctx context.Context, file string, add *deploy.AddOptions) error {
 	return deploy.Add(ctx, deployOpts(file), add)
+}
+
+func runLogin(registry, user, pass string, insecure bool) error {
+	if err := ociimg.Login(registry, user, pass, insecure); err != nil {
+		return err
+	}
+	scheme := "https"
+	if insecure {
+		scheme = "http"
+	}
+	logf("logged in to %s (%s); credentials stored in ~/.docker/config.json", registry, scheme)
+	return nil
+}
+
+func runLogout(registry string) error {
+	if err := ociimg.Logout(registry); err != nil {
+		return err
+	}
+	logf("removed credential for %s", registry)
+	return nil
 }

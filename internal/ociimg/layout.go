@@ -21,24 +21,27 @@ import (
 // Source identifies where an OCI image comes from: a local layout dir,
 // a local tar archive, or a registry reference.
 type Source struct {
-	Path string // local directory or tar file
-	Ref  string // registry reference
+	Path     string // local directory or tar file
+	Ref      string // registry reference
+	Insecure bool   // reach the registry over plain HTTP
 }
 
 // ParseSource classifies a user-supplied bundle reference. Anything that
 // exists on disk is treated as a local path; otherwise it must parse as
-// an OCI reference.
-func ParseSource(s string) (Source, error) {
+// an OCI reference. insecure requests plain-HTTP transport; registries
+// previously marked via `searke login --insecure` are honoured too.
+func ParseSource(s string, insecure bool) (Source, error) {
 	if s == "" {
 		return Source{}, fmt.Errorf("empty bundle reference")
 	}
 	if _, err := os.Stat(s); err == nil {
 		return Source{Path: s}, nil
 	}
-	if _, err := name.ParseReference(s); err != nil {
+	ref, err := name.ParseReference(s)
+	if err != nil {
 		return Source{}, fmt.Errorf("%q is neither a local path nor a valid registry reference: %w", s, err)
 	}
-	return Source{Ref: s}, nil
+	return Source{Ref: s, Insecure: insecure || IsInsecure(ref.Context().RegistryStr())}, nil
 }
 
 // OpenIndex resolves the source to an image index. When a tar file is
@@ -46,7 +49,7 @@ func ParseSource(s string) (Source, error) {
 func (s Source) OpenIndex() (v1.ImageIndex, func(), error) {
 	cleanup := func() {}
 	if s.Ref != "" {
-		ref, err := name.ParseReference(s.Ref)
+		ref, err := parseRef(s.Ref, s.Insecure)
 		if err != nil {
 			return nil, cleanup, err
 		}
@@ -191,12 +194,12 @@ func untarInto(r io.Reader, destDir string) error {
 }
 
 // Push publishes a local OCI layout directory to a registry reference.
-func Push(layoutDir, refStr string) error {
+func Push(layoutDir, refStr string, insecure bool) error {
 	ii, err := layout.ImageIndexFromPath(layoutDir)
 	if err != nil {
 		return fmt.Errorf("read OCI layout %s: %w", layoutDir, err)
 	}
-	ref, err := name.ParseReference(refStr)
+	ref, err := parseRef(refStr, insecure)
 	if err != nil {
 		return err
 	}
@@ -204,8 +207,8 @@ func Push(layoutDir, refStr string) error {
 }
 
 // PullIndex fetches an index from a registry (for save/inspect).
-func PullIndex(refStr string) (v1.ImageIndex, error) {
-	ref, err := name.ParseReference(refStr)
+func PullIndex(refStr string, insecure bool) (v1.ImageIndex, error) {
+	ref, err := parseRef(refStr, insecure)
 	if err != nil {
 		return nil, err
 	}
@@ -348,8 +351,8 @@ func copyDir(src, dst string) error {
 }
 
 // PullToLayout downloads a remote index into a local layout directory.
-func PullToLayout(refStr, outDir string) error {
-	ii, err := PullIndex(refStr)
+func PullToLayout(refStr, outDir string, insecure bool) error {
+	ii, err := PullIndex(refStr, insecure)
 	if err != nil {
 		return err
 	}

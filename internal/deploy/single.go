@@ -16,7 +16,8 @@ import (
 // machine, comparable to `sealos run --single`. Empty fields fall back
 // to the defaults noted on each one.
 type RunOptions struct {
-	Bundle string // positional arg: OCI dir, .oci.tar, or registry ref
+	Bundle   string // positional arg: OCI dir, .oci.tar, or registry ref
+	Insecure bool   // reach a registry bundle over plain HTTP
 
 	Name        string // cluster name (default "searke-<hostname>")
 	NodeName    string // Kubernetes node name (default sanitized hostname)
@@ -81,6 +82,7 @@ func SingleNodeCluster(ro RunOptions) (*cluster.Cluster, string, error) {
 	c.Metadata.Name = ro.Name
 	c.Spec.RKE2.Bundle = ro.Bundle
 	c.Spec.RKE2.CNI = ro.CNI
+	c.Spec.RKE2.Insecure = ro.Insecure
 	// Local execution ignores SSH auth fields; sudo:true enables the
 	// non-root `sudo -n` path (harmless when running as root).
 	c.Spec.SSH.Sudo = true
@@ -131,6 +133,9 @@ func reuseCluster(file string, ro RunOptions) (*cluster.Cluster, error) {
 	check("--service-cidr", ro.ServiceCIDR, c.Spec.RKE2Config["service-cidr"])
 	if ro.Address != "" {
 		check("--address", net.JoinHostPort(ro.Address, "9345"), c.Spec.Endpoints.RegistrationAddress)
+	}
+	if ro.Insecure {
+		check("--insecure", true, c.Spec.RKE2.Insecure)
 	}
 	for flag, pair := range conflicts {
 		return nil, fmt.Errorf("%s %v conflicts with %s (recorded %v); edit %s or run `searke apply -f` instead",

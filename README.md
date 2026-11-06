@@ -61,7 +61,8 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke bundle fetch -f bundle.yaml -o <dir>` | ✅ 已实现并真实验证 | 按 bundle.yaml 下载制品：先经 GitHub API 确认 release 元数据；sha256sum 清单与 install.sh（信任锚）只从 GitHub 控制的端点获取（Release API / contents API），大文件可经第三方镜像传输但一律按受信清单验哈希；断点续传、停滞检测、原子化落盘，产物记录 `bundle.lock.yaml` |
 | `searke bundle verify <dir>` | ✅ 已实现 | 重新校验已有 bundle：必需文件存在 + 哈希一致；manifest 中未下载的可选资产忽略 |
 | `searke image build <dir> -o <oci-dir>` | ✅ 已实现并真实验证 | 按平台各建一个子镜像，产出 OCI Image Index；纯 OCI media type（manifest/config/zstd 层）、固定时间戳可复现构建、`--tag` 写入 `image.ref.name` 注解 |
-| `searke image push <ref> --from <oci-dir>` | ✅ 已实现 | `remote.WriteIndex` 推送整个 index，使用默认 docker keychain 认证 |
+| `searke image push <ref> --from <oci-dir>` | ✅ 已实现并真实验证 | `remote.WriteIndex` 推送整个 index，docker keychain 认证；`--insecure` 走 HTTP；已在本机 HTTP+htpasswd registry 实测（push/pull/login/logout 全链路） |
+| `searke login <registry> -u <user>` | ✅ 已实现并真实验证 | 写 `~/.docker/config.json`（与 `docker login` 互通）；`-p`/`--password-stdin` 供密码；`--insecure` 把 registry 记入 `~/.searke/registries.json` 持久 HTTP 名单——之后所有命令对该 registry 免 flag 走 HTTP；`searke logout` 移除凭据 |
 | `searke image save <ref-or-dir> -o <tar>` | ✅ 已实现并真实验证 | 导出为含 OCI Layout 的 tar 归档（离线搬运） |
 | `searke image load <tar> -o <oci-dir>` | ✅ 已实现并真实验证 | 导入本地归档，还原 OCI Layout |
 | `searke run <bundle>` | ✅ 已实现 | 单机安装（仿 `sealos run --single`）：合成单节点集群走本地执行，生成 cluster.yaml 于 `~/.searke/<name>/`；重跑复用文件；`--dry-run` 仅生成 + plan |
@@ -194,8 +195,9 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 
 ## 已知限制 / 待办
 
-- `image push` 代码已实现但未在真实 registry 验证
+- `image push`/`login` 已在本机 `registry:2`（HTTP + htpasswd 认证）真实验证；尚未推送到公网 registry（ACR/Hub）
+- cluster.yaml `spec.rke2.insecure: true` 可让 `bundle: <registry-ref>` 走 HTTP；`searke run` 对应 `--insecure` |
 - 已真实验证（Parallels Ubuntu 22.04 **arm64** VM，RKE2 v1.36.5+rke2r1）：SSH `apply` 单节点 + agent join 成 2 节点集群、幂等重跑跳过、`status` 实时视图、`snapshot save/list/pull`、VM 内 `searke run` 本地执行安装单节点、`uninstall` 卸载后全新重装闭环、`searke add` 增量扩容（3 节点 Ready）
-- 未真实验证：`upgrade`、HA `snapshot restore`、3-server HA 拓扑、`image push`
+- 未真实验证：`upgrade`、HA `snapshot restore`、3-server HA 拓扑
 - 首期节点 OS 限定 Ubuntu（22.04 为验证版本；preflight 强制 Ubuntu，非 22.04 仅警告）
 - 节点增删、CNI profile 扩展未做（计划明确缓议）

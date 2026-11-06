@@ -47,6 +47,9 @@ type RKE2Spec struct {
 	CNI string `yaml:"cni,omitempty" json:"cni,omitempty"`
 	// Version, when set, must match the bundle's recorded version.
 	Version string `yaml:"version,omitempty" json:"version,omitempty"`
+	// Insecure reaches a registry bundle over plain HTTP — for air-gap
+	// registries without TLS. Ignored for local paths.
+	Insecure bool `yaml:"insecure,omitempty" json:"insecure,omitempty"`
 }
 
 // Spec is the cluster.yaml spec section.

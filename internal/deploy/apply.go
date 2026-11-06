@@ -73,7 +73,7 @@ func loadAndResolve(opts *Options) (*cluster.Cluster, *ResolvedBundle, error) {
 			return nil, nil, err
 		}
 	}
-	src, err := ociimg.ParseSource(c.Spec.RKE2.Bundle)
+	src, err := ociimg.ParseSource(c.Spec.RKE2.Bundle, c.Spec.RKE2.Insecure)
 	if err != nil {
 		return nil, nil, err
 	}
