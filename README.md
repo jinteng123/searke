@@ -12,6 +12,27 @@
 go build -o searke ./cmd/searke
 ```
 
+### Docker 镜像
+
+```bash
+docker build -t searke .
+# 多架构（需要 buildx）：
+docker buildx build --platform linux/amd64,linux/arm64 -t searke .
+# Go 模块代理受限时覆盖 GOPROXY（默认已用 goproxy.cn）：
+docker build --build-arg GOPROXY=https://proxy.golang.org,direct -t searke .
+```
+
+运行时把 SSH 凭据和工作目录挂进容器（镜像基于 `scratch`，无 shell，非 root uid 65532）：
+
+```bash
+docker run --rm \
+  -v ~/.ssh:/home/searke/.ssh:ro \          # 私钥 + known_hosts
+  -v /path/to/workdir:/work -w /work \      # cluster.yaml 与 .searke 状态目录
+  searke status -f cluster.yaml
+```
+
+注意 cluster.yaml 里 `spec.rke2.bundle` 写的是宿主机路径，需按**相同绝对路径**再挂一次（`-v /abs/bundle:/abs/bundle:ro`）。容器内适用远程操作（validate/plan/apply/status/add/uninstall/snapshot）；`searke run` 的本机安装语义不适用容器场景。
+
 ## 单机快速安装（searke run）
 
 等价于 `sealos run --single`：不写 cluster.yaml，一条命令在本机装单节点集群。
