@@ -154,3 +154,7 @@ func runSnapshotRestore(file, name string, yes bool) error {
 func runUninstall(file string, yes bool) error {
 	return deploy.Uninstall(deployOpts(file), yes)
 }
+
+func runAdd(ctx context.Context, file string, add *deploy.AddOptions) error {
+	return deploy.Add(ctx, deployOpts(file), add)
+}

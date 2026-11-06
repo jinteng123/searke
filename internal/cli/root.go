@@ -176,11 +176,27 @@ func newClusterCmds() []*cobra.Command {
 	}
 	uninstall.Flags().BoolVar(&uninstallYes, "yes", false, "confirm the destructive uninstall")
 
-	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade, uninstall} {
+	var add deploy.AddOptions
+	addCmd := &cobra.Command{
+		Use:   "add",
+		Short: "Add servers/agents to an existing cluster (sealos-style: --masters/--nodes)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAdd(cmd.Context(), file, &add)
+		},
+	}
+	addCmd.Flags().StringSliceVar(&add.Servers, "servers", nil, "control-plane addresses to add")
+	addCmd.Flags().StringSliceVar(&add.Servers, "masters", nil, "alias for --servers")
+	addCmd.Flags().StringSliceVar(&add.Agents, "agents", nil, "worker addresses to add")
+	addCmd.Flags().StringSliceVar(&add.Agents, "nodes", nil, "alias for --agents")
+	addCmd.Flags().StringVar(&add.SSHUser, "ssh-user", "", "set spec.ssh.user in the descriptor (needed by searke run clusters)")
+	addCmd.Flags().StringVar(&add.SSHKey, "ssh-key", "", "set spec.ssh.identityFile")
+	addCmd.Flags().IntVar(&add.SSHPort, "ssh-port", 0, "set spec.ssh.port")
+
+	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd} {
 		flag(c)
 	}
 	snap := newSnapshotCmd(&file)
-	return []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, run, snap}
+	return []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd, run, snap}
 }
 
 func newSnapshotCmd(file *string) *cobra.Command {

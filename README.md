@@ -51,6 +51,7 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke upgrade -f cluster.yaml` | ✅ 已实现 | 滚动升级：server 逐台先于 agent；升级前自动 etcd 快照 + drain/uncordon（可 `--skip-*` 关闭，单节点集群自动跳过 drain）；拒绝降级与跨 minor 跳跃；`apply` 检测到版本漂移会引导改用本命令 |
 | `searke snapshot save/list/pull/restore` | ✅ 已实现 | etcd 快照工作流：首 server 上 `rke2 etcd-snapshot save`、列举、拉回本地；restore 按 RKE2 HA 流程停全部 server → 首 server cluster-reset → 其余 server 清 db 重入（需 `--yes`） |
 | `searke uninstall -f cluster.yaml --yes` | ✅ 已实现 | 从所有节点移除 RKE2：复用上游 `rke2-killall.sh` + `rke2-uninstall.sh`（agent 先于 server），清理 `/opt/searke` 与本地状态文件；需 `--yes` 确认 |
+| `searke add --nodes/--masters <ip>...` | ✅ 已实现 | sealos 风格扩容：`--agents`/`--servers` 加 worker/master（别名 `--nodes`/`--masters`）；地址写回 cluster.yaml（保留注释）后走正常 apply，已有节点自动跳过；`--ssh-user/--ssh-key/--ssh-port` 可补全 `searke run` 集群缺失的 ssh 配置；server 总数仍受 etcd 奇数校验约束 |
 
 ## 快速流程
 
@@ -173,7 +174,7 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 ## 已知限制 / 待办
 
 - `image push` 代码已实现但未在真实 registry 验证
-- 已真实验证（Parallels Ubuntu 22.04 **arm64** VM，RKE2 v1.36.5+rke2r1）：SSH `apply` 单节点 + agent join 成 2 节点集群、幂等重跑跳过、`status` 实时视图、`snapshot save/list/pull`、VM 内 `searke run` 本地执行安装单节点、`uninstall` 卸载后全新重装闭环
+- 已真实验证（Parallels Ubuntu 22.04 **arm64** VM，RKE2 v1.36.5+rke2r1）：SSH `apply` 单节点 + agent join 成 2 节点集群、幂等重跑跳过、`status` 实时视图、`snapshot save/list/pull`、VM 内 `searke run` 本地执行安装单节点、`uninstall` 卸载后全新重装闭环、`searke add` 增量扩容（3 节点 Ready）
 - 未真实验证：`upgrade`、HA `snapshot restore`、3-server HA 拓扑、`image push`
 - 首期节点 OS 限定 Ubuntu（22.04 为验证版本；preflight 强制 Ubuntu，非 22.04 仅警告）
 - 节点增删、CNI profile 扩展未做（计划明确缓议）
