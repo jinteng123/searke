@@ -199,5 +199,5 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 - cluster.yaml `spec.rke2.insecure: true` 可让 `bundle: <registry-ref>` 走 HTTP；`searke run` 对应 `--insecure` |
 - 已真实验证（Parallels Ubuntu 22.04 **arm64** VM，RKE2 v1.36.5+rke2r1）：SSH `apply` 单节点 + agent join 成 2 节点集群、幂等重跑跳过、`status` 实时视图、`snapshot save/list/pull`、VM 内 `searke run` 本地执行安装单节点、`uninstall` 卸载后全新重装闭环、`searke add` 增量扩容（3 节点 Ready）
 - 未真实验证：`upgrade`、HA `snapshot restore`、3-server HA 拓扑
-- 首期节点 OS 限定 Ubuntu（22.04 为验证版本；preflight 强制 Ubuntu，非 22.04 仅警告）
+- 节点 OS：RKE2 tar 安装与发行版无关，preflight 仅警告非 Ubuntu 发行版（Ubuntu 22.04 为已验证基线）。硬性限制：SELinux 必须为 Permissive/Disabled（tar 安装不含 rke2-selinux 策略），且需要 iptables
 - 节点增删、CNI profile 扩展未做（计划明确缓议）

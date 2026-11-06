@@ -65,13 +65,33 @@ func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 			rep.OS, rep.OSVersion = f[0], f[1]
 		}
 	}
-	// Scope for the first release is Ubuntu 22.04 (per the dev plan).
-	if rep.OS != "ubuntu" {
-		return nil, fmt.Errorf("%s: unsupported OS %q; this release supports Ubuntu 22.04 only", nodeName, rep.OS)
-	}
-	if rep.OSVersion != "22.04" {
+	// RKE2's tar install is distro-agnostic; Ubuntu 22.04 is simply the
+	// validated baseline. Warn on anything else instead of blocking.
+	switch rep.OS {
+	case "ubuntu":
+		if rep.OSVersion != "22.04" {
+			rep.Warnings = append(rep.Warnings,
+				fmt.Sprintf("Ubuntu %s is not the validated version (22.04); proceeding anyway", rep.OSVersion))
+		}
+	case "":
+		rep.Warnings = append(rep.Warnings, "could not identify distro (/etc/os-release missing); proceeding anyway")
+	default:
 		rep.Warnings = append(rep.Warnings,
-			fmt.Sprintf("Ubuntu %s is not the validated version (22.04); proceeding anyway", rep.OSVersion))
+			fmt.Sprintf("distro %s %s is not in the validated set (Ubuntu 22.04); RKE2 binaries are distro-agnostic, proceeding anyway", rep.OS, rep.OSVersion))
+	}
+
+	// The tar install ships no SELinux policy (that lives in the
+	// rke2-selinux RPM). Enforcing mode breaks it outright on RHEL-family
+	// distros, so refuse early with an actionable message.
+	if r, _ := c.RunSudo("getenforce 2>/dev/null"); r != nil && r.ExitCode == 0 &&
+		strings.TrimSpace(r.Stdout) == "Enforcing" {
+		return nil, fmt.Errorf("%s: SELinux is Enforcing but the tar install carries no SELinux policy: `setenforce 0` (and disable in /etc/selinux/config) or install rke2-selinux first", nodeName)
+	}
+
+	// kubelet and Canal program rules through iptables (the nft frontend
+	// is fine); a missing binary surfaces much later inside RKE2.
+	if r, _ := c.RunSudo("command -v iptables >/dev/null 2>&1"); r == nil || r.ExitCode != 0 {
+		rep.Warnings = append(rep.Warnings, "iptables not found; kubelet/Canal require it")
 	}
 
 	// Verify a real root shell, not just that the command ran: on a
