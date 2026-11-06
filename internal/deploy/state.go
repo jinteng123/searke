@@ -145,3 +145,14 @@ func (s *State) Log(action, detail string) error {
 	s.History = append(s.History, HistoryEntry{TS: time.Now().UTC(), Action: action, Detail: detail})
 	return s.Save()
 }
+
+// Reset deletes the state file entirely — used by uninstall so a fresh
+// apply starts from a clean slate.
+func (s *State) Reset() error {
+	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	s.Nodes = map[string]NodeState{}
+	s.History = nil
+	return nil
+}

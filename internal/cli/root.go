@@ -165,11 +165,22 @@ func newClusterCmds() []*cobra.Command {
 	}
 	upgrade.Flags().BoolVar(&skipDrain, "skip-drain", false, "do not cordon/drain nodes during upgrade")
 	upgrade.Flags().BoolVar(&skipSnapshot, "skip-snapshot", false, "do not take a pre-upgrade etcd snapshot")
-	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade} {
+
+	var uninstallYes bool
+	uninstall := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Remove RKE2 from every node in cluster.yaml (upstream killall + uninstall scripts)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runUninstall(file, uninstallYes)
+		},
+	}
+	uninstall.Flags().BoolVar(&uninstallYes, "yes", false, "confirm the destructive uninstall")
+
+	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade, uninstall} {
 		flag(c)
 	}
 	snap := newSnapshotCmd(&file)
-	return []*cobra.Command{validate, plan, apply, status, upgrade, run, snap}
+	return []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, run, snap}
 }
 
 func newSnapshotCmd(file *string) *cobra.Command {

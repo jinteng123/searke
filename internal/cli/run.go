@@ -150,3 +150,7 @@ func runSnapshotPull(file, name, outDir string) error {
 func runSnapshotRestore(file, name string, yes bool) error {
 	return deploy.SnapshotRestore(deployOpts(file), name, yes)
 }
+
+func runUninstall(file string, yes bool) error {
+	return deploy.Uninstall(deployOpts(file), yes)
+}
