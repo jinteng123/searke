@@ -13,8 +13,8 @@
 | 阶段 0：schema + OCI 原型 | ✅ 完成 | `bundle.yaml`/`cluster.yaml` 解析与校验；多架构 OCI Index 构建、按平台提取均经单元测试与真实制品验证 |
 | 阶段 1：`bundle fetch`/`verify` | ✅ 完成 | `v1.36.5+rke2r1` amd64+arm64 全量下载、上游 SHA256 校验、`bundle.lock.yaml` 生成真实通过；超时/重试/断点续传/原子落盘已实现 |
 | 阶段 2：`image build/push/save/load` | ✅ 完成 | build/save/load 已真实验证（1.5GB 双架构归档）；push 代码就绪待 registry 验证 |
-| 阶段 3：`validate/plan/apply` | ✅ 代码完成 | SSH/SFTP/preflight/分发/install.sh/编排/幂等续跑全部实现；新增本地执行路径（见下）；多节点实机端到端待验证 |
-| 阶段 4：`status`+生命周期 | ✅ 代码完成 | `status`、etcd snapshot save/list/pull/restore、按 server 先 agent 后的滚动升级均已实现；实机待验证 |
+| 阶段 3：`validate/plan/apply` | ✅ 完成 | Parallels Ubuntu 22.04 arm64 VM 实测：SSH apply 单节点 + agent join 组成 2 节点集群、幂等重跑、本机节点本地执行安装全部通过；preflight 拦获并处理了缺省路由、主机名重复、known_hosts 算法不匹配等实机问题 |
+| 阶段 4：`status`+生命周期 | ✅ 部分验证 | `status`（状态+live kubectl）与 `snapshot save/list/pull` 实机通过；`snapshot restore` HA 流程、`upgrade` 滚动升级、3-server HA 拓扑、`image push` 实机待验证 |
 
 **实现期新增决策：** 开发环境实测 `raw.githubusercontent.com` 与 GitHub Release 资产域名间歇不可达。下载器采用**信任锚模型**：先经 `api.github.com` 读取 release 元数据（兼作"tag 与资产存在"预检）；sha256sum 清单与 `install.sh` 只从 GitHub 控制端点获取（Release 资产 API / contents API），绝不走第三方镜像；大体积制品允许经 gh-proxy.com / ghproxy.net 传输，但全部按受信清单校验 SHA256。连接级超时 10s、响应头 30s、body 停滞 45s 即切换候选并断点续传。全部下载先入临时目录，校验通过后整体原子替换输出目录。
 

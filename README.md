@@ -163,7 +163,7 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 
 - **下载卡死/慢速连接**：大文件候选顺序为 GitHub → gh-proxy.com → ghproxy.net，连接级超时 10s、停滞 45s 即切换下一候选并断点续传。信任锚文件（sha256sum、install.sh）不走镜像，只回退到 api.github.com。`bundle.lock.yaml` 记录实际生效 URL。
 - **`sha256 mismatch`**：上游清单与文件不符（串包或损坏）。删除对应文件重跑 fetch；校验未过不会生成镜像。
-- **SSH dial 失败/known_hosts**：节点必须已在 `~/.ssh/known_hosts`（先手动 `ssh` 一次或 `ssh-keyscan`）；密钥需无密码或在 ssh-agent 中。本机地址节点不走 SSH，跳过此检查。
+- **SSH dial 失败/known_hosts**：节点必须已在 `~/.ssh/known_hosts`（先手动 `ssh` 一次或 `ssh-keyscan`）。注意 Go ssh 客户端按协商算法校验——只录了 ed25519 而协商出 rsa/ecdsa 会报 `key mismatch`，用 `ssh-keyscan -t ed25519,rsa,ecdsa <ip> >> ~/.ssh/known_hosts` 录全。密钥需无密码或在 ssh-agent 中。本机地址节点不走 SSH，跳过此检查。
 - **`passwordless sudo required`**：`spec.ssh.sudo: true` 时要求 `sudo -n` 可用；否则用 root 用户，或以 root 运行 searke（本机节点）。
 - **节点已属其他集群**：apply/preflight 发现远端 `config.yaml` 的 `server:` 与本集群注册地址不同会拒绝继续，不会自动 reset。
 - **中断续跑**：`.searke/state-<cluster>.json` 记录每节点阶段；重跑 `apply` 自动跳过已完成阶段。版本不一致的状态文件需 `upgrade` 或删除重建。
@@ -172,6 +172,7 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 ## 已知限制 / 待办
 
 - `image push` 代码已实现但未在真实 registry 验证
-- `apply`/`plan`/`upgrade`/`snapshot`/`status` 已实现完整逻辑，尚无真实多节点环境端到端验证
+- 已真实验证（Parallels Ubuntu 22.04 **arm64** VM，RKE2 v1.36.5+rke2r1）：SSH `apply` 单节点 + agent join 成 2 节点集群、幂等重跑跳过、`status` 实时视图、`snapshot save/list/pull`、VM 内 `searke run` 本地执行安装单节点
+- 未真实验证：`upgrade`、HA `snapshot restore`、3-server HA 拓扑、`image push`
 - 首期节点 OS 限定 Ubuntu（22.04 为验证版本；preflight 强制 Ubuntu，非 22.04 仅警告）
 - 节点增删、CNI profile 扩展未做（计划明确缓议）

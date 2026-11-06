@@ -98,7 +98,9 @@ func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 	route, err := c.Run("ip route show default")
 	rep.HasRoute = err == nil && route.ExitCode == 0 && strings.Contains(route.Stdout, "default")
 	if !rep.HasRoute {
-		return nil, fmt.Errorf("%s: no default route configured", nodeName)
+		// Not fatal: an air-gap node on a single subnet can install and
+		// run without one; it usually indicates broken networking though.
+		rep.Warnings = append(rep.Warnings, "no default route configured; off-subnet traffic (external services, cross-subnet nodes) will fail")
 	}
 
 	if r, _ := c.RunSudo("test -d /var/lib/rancher/rke2 && echo yes"); r != nil && strings.TrimSpace(r.Stdout) == "yes" {
