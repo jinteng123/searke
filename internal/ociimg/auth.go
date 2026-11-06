@@ -1,14 +1,19 @@
 package ociimg
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
 
 // Credentials are stored docker-compatible in ~/.docker/config.json so
@@ -17,12 +22,14 @@ import (
 // Plain-HTTP registries are recorded separately under
 // ~/.searke/registries.json because docker keeps that policy in the
 // daemon config, not the user config.
+//
+// The docker config is edited as a map of raw entries so settings the
+// CLI does not know about (currentContext, proxies, credsStore) survive
+// a rewrite; writes are atomic via temp-file + rename.
 
-// dockerConfig keeps every auth entry as raw JSON so entries written
-// by other tools (identitytoken, credHelpers results) survive a rewrite.
-type dockerConfig struct {
-	Auths map[string]json.RawMessage `json:"auths"`
-}
+// dockerHubKey is the auths key authn.DefaultKeychain looks up for the
+// Docker Hub; docker login stores credentials under it too.
+const dockerHubKey = "https://index.docker.io/v1/"
 
 func dockerConfigPath() (string, error) {
 	if p := os.Getenv("DOCKER_CONFIG"); p != "" {
@@ -43,50 +50,185 @@ func registriesPath() (string, error) {
 	return filepath.Join(home, ".searke", "registries.json"), nil
 }
 
-// Login stores registry credentials docker-compatibly and, when
-// insecure is set, records the registry as plain-HTTP so every later
-// searke command reaches it without TLS.
-func Login(registry, user, pass string, insecure bool) error {
-	registry = NormalizeRegistry(registry)
-	if registry == "" {
-		return fmt.Errorf("empty registry")
+// registryAuthKey maps a normalized registry to the auths key both
+// docker and the go-containerregistry keychain look up.
+func registryAuthKey(registry string) string {
+	switch registry {
+	case "docker.io", "index.docker.io", "registry-1.docker.io":
+		return dockerHubKey
 	}
-	path, err := dockerConfigPath()
+	return registry
+}
+
+func loadDockerConfig(path string) (map[string]json.RawMessage, error) {
+	doc := map[string]json.RawMessage{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return doc, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return doc, nil
+}
+
+func authsOf(doc map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	auths := map[string]json.RawMessage{}
+	if raw, ok := doc["auths"]; ok {
+		if err := json.Unmarshal(raw, &auths); err != nil {
+			return nil, fmt.Errorf("parse auths: %w", err)
+		}
+	}
+	return auths, nil
+}
+
+func saveAuths(doc map[string]json.RawMessage, auths map[string]json.RawMessage) error {
+	raw, err := json.Marshal(auths)
 	if err != nil {
 		return err
 	}
-	cfg := dockerConfig{Auths: map[string]json.RawMessage{}}
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return fmt.Errorf("parse %s: %w", path, err)
-		}
-		if cfg.Auths == nil {
-			cfg.Auths = map[string]json.RawMessage{}
-		}
-	} else if !os.IsNotExist(err) {
+	doc["auths"] = raw
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if _, err := f.Write(data); err == nil {
+		err = f.Close()
+	} else {
+		f.Close()
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// credStoreWarnings reports when the config defers to a credential
+// helper (credsStore or credHelpers[registry]): authn.DefaultKeychain
+// then ignores the plain auths entry searke just wrote.
+func credStoreWarnings(doc map[string]json.RawMessage, registry string) []string {
+	var warns []string
+	if raw, ok := doc["credsStore"]; ok {
+		var store string
+		if json.Unmarshal(raw, &store) == nil && store != "" {
+			warns = append(warns, fmt.Sprintf(
+				"credsStore %q is configured: the keychain ignores auths entries; "+
+					"if pushes fail with 401, use `docker login` so the helper stores the credential", store))
+		}
+	}
+	if raw, ok := doc["credHelpers"]; ok {
+		var helpers map[string]string
+		if json.Unmarshal(raw, &helpers) == nil {
+			if _, ok := helpers[registry]; ok {
+				warns = append(warns, fmt.Sprintf(
+					"a credHelper is configured for %s: the keychain ignores the stored auths entry", registry))
+			}
+		}
+	}
+	return warns
+}
+
+// checkCredential makes one authenticated /v2/ request so a wrong
+// password fails at login instead of surfacing as a 401 at push time.
+// Registries that allow anonymous pulls can still answer 200 here —
+// the push-scope token exchange covers those.
+func checkCredential(ctx context.Context, registry, user, pass string, insecure bool) error {
+	var opts []name.Option
+	if insecure || IsInsecure(registry) {
+		opts = append(opts, name.Insecure)
+	}
+	reg, err := name.NewRegistry(registry, opts...)
+	if err != nil {
+		return err
+	}
+	auth := &authn.Basic{Username: user, Password: pass}
+	tr, err := transport.NewWithContext(ctx, reg, auth, http.DefaultTransport,
+		[]string{reg.Scope("pull")})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		reg.Scheme()+"://"+reg.RegistryStr()+"/v2/", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusUnauthorized:
+		return fmt.Errorf("registry rejected the credential for %s@%s", user, registry)
+	default:
+		return fmt.Errorf("credential check: registry answered %s", resp.Status)
+	}
+}
+
+// Login verifies the credential, then stores it docker-compatibly. When
+// insecure is set the registry is also recorded as plain-HTTP so every
+// later searke command reaches it without TLS. Warnings are returned
+// for cases where the stored entry will not be honoured.
+func Login(ctx context.Context, registry, user, pass string, insecure bool) ([]string, error) {
+	registry = NormalizeRegistry(registry)
+	if registry == "" {
+		return nil, fmt.Errorf("empty registry")
+	}
+	if err := checkCredential(ctx, registry, user, pass, insecure); err != nil {
+		return nil, err
+	}
+	path, err := dockerConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	doc, err := loadDockerConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	auths, err := authsOf(doc)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	authJSON, err := json.Marshal(struct {
 		Auth string `json:"auth"`
 	}{Auth: base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cfg.Auths[registry] = authJSON
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	auths[registryAuthKey(registry)] = authJSON
+	if err := saveAuths(doc, auths); err != nil {
+		return nil, err
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return err
+	if err := writeFileAtomic(path, data, 0o600); err != nil {
+		return nil, err
 	}
+	warns := credStoreWarnings(doc, registry)
 	if insecure {
-		return SetInsecure(registry, true)
+		return warns, SetInsecure(registry, true)
 	}
-	return nil
+	return warns, nil
 }
 
 // Logout removes the stored credential for a registry.
@@ -96,29 +238,27 @@ func Logout(registry string) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	doc, err := loadDockerConfig(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
-	var cfg dockerConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	auths, err := authsOf(doc)
+	if err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
-	if _, ok := cfg.Auths[registry]; !ok {
-		return fmt.Errorf("no stored credential for %s", registry)
+	key := registryAuthKey(registry)
+	if _, ok := auths[key]; !ok {
+		return fmt.Errorf("no stored credential for %s (a credStore/helper may hold it instead)", registry)
 	}
-	delete(cfg.Auths, registry)
-	if len(cfg.Auths) == 0 {
-		cfg.Auths = map[string]json.RawMessage{}
+	delete(auths, key)
+	if err := saveAuths(doc, auths); err != nil {
+		return err
 	}
-	out, err := json.MarshalIndent(cfg, "", "  ")
+	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o600)
+	return writeFileAtomic(path, out, 0o600)
 }
 
 // NormalizeRegistry strips scheme and path so "https://host:5000/x"
@@ -140,7 +280,10 @@ func SetInsecure(registry string, insecure bool) error {
 	if err != nil {
 		return err
 	}
-	list, _ := readInsecureList(path)
+	list, err := readInsecureList(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
 	found := map[string]bool{}
 	for _, r := range list {
 		found[r] = true
@@ -150,20 +293,18 @@ func SetInsecure(registry string, insecure bool) error {
 	} else {
 		delete(found, registry)
 	}
-	var out []string
+	out := []string{}
 	for r := range found {
 		out = append(out, r)
 	}
+	sort.Strings(out)
 	data, err := json.MarshalIndent(struct {
 		Insecure []string `json:"insecure"`
 	}{Insecure: out}, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
+	return writeFileAtomic(path, data, 0o600)
 }
 
 // IsInsecure reports whether a registry host was marked plain-HTTP,

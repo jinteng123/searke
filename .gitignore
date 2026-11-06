@@ -2,3 +2,4 @@
 /.searke/
 /searke
 *.part
+.DS_Store

@@ -94,6 +94,23 @@ func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 		rep.Warnings = append(rep.Warnings, "iptables not found; kubelet/Canal require it")
 	}
 
+	// RHEL-family firewalls sit in front of the CNI datapath; upstream
+	// docs recommend disabling firewalld for RKE2.
+	if r, _ := c.RunSudo("systemctl is-active firewalld 2>/dev/null"); r != nil && r.ExitCode == 0 &&
+		strings.TrimSpace(r.Stdout) == "active" {
+		rep.Warnings = append(rep.Warnings, "firewalld is active; RKE2 docs recommend disabling it or opening the CNI datapath ports (8472/udp, 179/tcp)")
+	}
+
+	// NetworkManager will reconfigure the Canal interfaces unless told
+	// not to; upstream ships /etc/NetworkManager/conf.d/rke2-canal.conf.
+	if r, _ := c.RunSudo("systemctl is-active NetworkManager 2>/dev/null"); r != nil && r.ExitCode == 0 &&
+		strings.TrimSpace(r.Stdout) == "active" {
+		if r2, _ := c.RunSudo("test -f /etc/NetworkManager/conf.d/rke2-canal.conf"); r2 == nil || r2.ExitCode != 0 {
+			rep.Warnings = append(rep.Warnings,
+				"NetworkManager is active; add /etc/NetworkManager/conf.d/rke2-canal.conf marking cali*/flannel* unmanaged, or NM may reconfigure CNI interfaces")
+		}
+	}
+
 	// Verify a real root shell, not just that the command ran: on a
 	// local executor without sudo, RunSudo degrades to an unprivileged
 	// run and a bare `true` would pass.

@@ -50,6 +50,17 @@ var epochTime = time.Unix(0, 0).UTC()
 // Some registries (e.g. ACR personal) reject zstd layers with
 // BLOB_TYPE_INVALID; build with "gzip" for those.
 func Build(bundleDir, outDir, tag, comp string) (*Meta, error) {
+	// The payload is already zst-compressed; zstd layers avoid the
+	// pointless gzip pass and keep pure-OCI media types. gzip is
+	// offered for registries that validate layer media types strictly.
+	op, mt := compression.ZStd, types.OCILayerZStd
+	switch comp {
+	case "", "zstd":
+	case "gzip":
+		op, mt = compression.GZip, types.OCILayer
+	default:
+		return nil, fmt.Errorf("unknown --compression %q (want zstd|gzip)", comp)
+	}
 	b, err := bundle.VerifyBundleDir(bundleDir)
 	if err != nil {
 		return nil, fmt.Errorf("bundle verification failed, refusing to build image: %w", err)
@@ -69,7 +80,7 @@ func Build(bundleDir, outDir, tag, comp string) (*Meta, error) {
 	}()
 	meta := &Meta{Version: b.Spec.Version, CNI: cni, Digests: map[string]string{}}
 	for _, p := range platforms {
-		img, digest, tarPath, err := buildPlatformImage(bundleDir, b.Spec.Version, cni, p, comp)
+		img, digest, tarPath, err := buildPlatformImage(bundleDir, b.Spec.Version, cni, p, op, mt)
 		if err != nil {
 			return nil, err
 		}
@@ -139,19 +150,10 @@ func prepareLayoutDir(dir string) error {
 // buildPlatformImage assembles the single-layer image for one platform.
 // The returned tar path backs the layer lazily; the caller must keep it
 // until the index has been written, then remove it.
-func buildPlatformImage(bundleDir, version, cni string, p bundle.Platform, comp string) (v1.Image, v1.Hash, string, error) {
+func buildPlatformImage(bundleDir, version, cni string, p bundle.Platform, op compression.Compression, mt types.MediaType) (v1.Image, v1.Hash, string, error) {
 	tarPath, err := writeLayerTar(bundleDir, p)
 	if err != nil {
 		return nil, v1.Hash{}, "", err
-	}
-	// The payload is already zst-compressed; zstd layers avoid the
-	// pointless gzip pass and keep pure-OCI media types. gzip is
-	// offered for registries that validate layer media types strictly.
-	op, mt := compression.ZStd, types.OCILayerZStd
-	if comp == "gzip" {
-		op, mt = compression.GZip, types.OCILayer
-	} else if comp != "" && comp != "zstd" {
-		return nil, v1.Hash{}, "", fmt.Errorf("unknown --compression %q (want zstd|gzip)", comp)
 	}
 	layer, err := tarball.LayerFromFile(tarPath,
 		tarball.WithCompression(op),

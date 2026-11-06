@@ -3,6 +3,7 @@ package ociimg
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/jint/searke/internal/bundle"
 )
@@ -194,7 +196,10 @@ func untarInto(r io.Reader, destDir string) error {
 }
 
 // Push publishes a local OCI layout directory to a registry reference.
-func Push(layoutDir, refStr string, insecure bool) error {
+// Platform images are pushed in parallel by digest — no extra tags are
+// left in the repository — then the index itself is written. When
+// progress is non-nil each platform upload is announced on it.
+func Push(ctx context.Context, layoutDir, refStr string, insecure bool, progress io.Writer) error {
 	ii, err := layout.ImageIndexFromPath(layoutDir)
 	if err != nil {
 		return fmt.Errorf("read OCI layout %s: %w", layoutDir, err)
@@ -203,7 +208,57 @@ func Push(layoutDir, refStr string, insecure bool) error {
 	if err != nil {
 		return err
 	}
-	return remote.WriteIndex(ref, ii, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	repo := ref.Context()
+	opts := []remote.Option{remote.WithAuthFromKeychain(authn.DefaultKeychain)}
+
+	im, err := ii.IndexManifest()
+	if err != nil {
+		return err
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	for _, m := range im.Manifests {
+		m := m
+		if !m.MediaType.IsImage() {
+			continue
+		}
+		img, err := ii.Image(m.Digest)
+		if err != nil {
+			return err
+		}
+		var size int64
+		layers, err := img.Layers()
+		if err != nil {
+			return err
+		}
+		for _, l := range layers {
+			s, err := l.Size()
+			if err != nil {
+				return err
+			}
+			size += s
+		}
+		plat := "platform"
+		if m.Platform != nil {
+			plat = m.Platform.OS + "/" + m.Platform.Architecture
+		}
+		d := repo.Digest(m.Digest.String())
+		popts := append([]remote.Option{}, opts...)
+		popts = append(popts, remote.WithContext(gctx))
+		g.Go(func() error {
+			if progress != nil {
+				fmt.Fprintf(progress, "  pushing %s (%.1f MB)\n", plat, float64(size)/1e6)
+			}
+			err := remote.Write(d, img, popts...)
+			if progress != nil {
+				fmt.Fprintf(progress, "  %s done\n", plat)
+			}
+			return err
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	return remote.WriteIndex(ref, ii, append(opts, remote.WithContext(ctx))...)
 }
 
 // PullIndex fetches an index from a registry (for save/inspect).

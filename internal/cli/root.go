@@ -79,7 +79,7 @@ func newImageCmd() *cobra.Command {
 		Short: "Push an OCI layout directory to a registry",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runImagePush(from, args[0], pushInsecure)
+			return runImagePush(cmd.Context(), from, args[0], pushInsecure)
 		},
 	}
 	push.Flags().StringVar(&from, "from", "", "OCI layout dir to push (required)")
@@ -231,11 +231,13 @@ func newClusterCmds() []*cobra.Command {
 					return err
 				}
 				pass = strings.TrimRight(string(b), "\r\n")
+			} else if pass != "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: --password exposes the secret to ps and shell history; prefer --password-stdin")
 			}
 			if pass == "" {
 				return fmt.Errorf("pass --password or --password-stdin")
 			}
-			return runLogin(args[0], loginUser, pass, loginInsecure)
+			return runLogin(cmd.Context(), args[0], loginUser, pass, loginInsecure)
 		},
 	}
 	login.Flags().StringVarP(&loginUser, "username", "u", "", "registry username (required)")

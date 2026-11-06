@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -50,8 +51,8 @@ func runImageBuild(bundleDir, tag, outDir, comp string) error {
 	return nil
 }
 
-func runImagePush(from, ref string, insecure bool) error {
-	if err := ociimg.Push(from, ref, insecure); err != nil {
+func runImagePush(ctx context.Context, from, ref string, insecure bool) error {
+	if err := ociimg.Push(ctx, from, ref, insecure, os.Stderr); err != nil {
 		return err
 	}
 	logf("pushed %s -> %s", from, ref)
@@ -159,9 +160,13 @@ func runAdd(ctx context.Context, file string, add *deploy.AddOptions) error {
 	return deploy.Add(ctx, deployOpts(file), add)
 }
 
-func runLogin(registry, user, pass string, insecure bool) error {
-	if err := ociimg.Login(registry, user, pass, insecure); err != nil {
+func runLogin(ctx context.Context, registry, user, pass string, insecure bool) error {
+	warns, err := ociimg.Login(ctx, registry, user, pass, insecure)
+	if err != nil {
 		return err
+	}
+	for _, w := range warns {
+		logf("warning: %s", w)
 	}
 	scheme := "https"
 	if insecure {
