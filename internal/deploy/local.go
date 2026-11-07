@@ -163,10 +163,13 @@ func (l *LocalExecutor) DownloadFile(remote, local string) error {
 }
 
 // WriteFile writes small text content to a path as root, same remote
-// semantics as the SSH client.
+// semantics as the SSH client: temp file + rename, never a truncated
+// file on interruption.
 func (l *LocalExecutor) WriteFile(remote string, content []byte, mode os.FileMode) error {
-	res, err := l.RunStdin(fmt.Sprintf("umask 077; tee %s > /dev/null && chmod %o %s",
-		shellQuote(remote), mode, shellQuote(remote)), content)
+	tmp := remote + ".searke-tmp"
+	res, err := l.RunStdin(fmt.Sprintf(
+		"umask 077; tee %s > /dev/null && chmod %o %s && mv %s %s",
+		shellQuote(tmp), mode, shellQuote(tmp), shellQuote(tmp), shellQuote(remote)), content)
 	if err != nil {
 		return err
 	}

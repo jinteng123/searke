@@ -166,21 +166,40 @@ func mergeRemoteSans(ex Executor, sans []string) error {
 	return ex.WriteFile(remoteConfigPath, out, 0o600)
 }
 
+// waitServerReady blocks until rke2-server is active AND the local
+// apiserver answers /readyz — the latter proves etcd connectivity was
+// re-established, which is what protects quorum before the next
+// server's restart in a rolling operation.
+func waitServerReady(ex Executor, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	active := false
+	for time.Now().Before(deadline) {
+		if !active {
+			if r, _ := ex.RunSudo("systemctl is-active rke2-server"); r != nil && strings.TrimSpace(r.Stdout) == "active" {
+				active = true
+			}
+		} else {
+			res, err := ex.RunSudo(fmt.Sprintf(
+				"%s --kubeconfig %s --request-timeout=10s get --raw=/readyz",
+				kubectlPath, kubeconfigPath))
+			if err == nil && res.ExitCode == 0 && strings.Contains(res.Stdout, "ok") {
+				return nil
+			}
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return fmt.Errorf("rke2-server did not come back ready within %s", timeout)
+}
+
 // restartServerAndVerify restarts rke2-server, waits until the unit is
-// active, then confirms the serving cert carries all requested SANs.
+// serving again, then confirms the serving cert carries all requested
+// SANs.
 func restartServerAndVerify(ex Executor, n cluster.Node, sans []string, opts *Options) error {
 	if _, err := runAsRoot(ex, "systemctl restart rke2-server"); err != nil {
 		return fmt.Errorf("restart rke2-server: %w", err)
 	}
-	deadline := time.Now().Add(10 * time.Minute)
-	for time.Now().Before(deadline) {
-		if r, _ := ex.RunSudo("systemctl is-active rke2-server"); r != nil && strings.TrimSpace(r.Stdout) == "active" {
-			break
-		}
-		time.Sleep(3 * time.Second)
-	}
-	if r, _ := ex.RunSudo("systemctl is-active rke2-server"); r == nil || strings.TrimSpace(r.Stdout) != "active" {
-		return fmt.Errorf("rke2-server did not come back active within 10m")
+	if err := waitServerReady(ex, 10*time.Minute); err != nil {
+		return err
 	}
 	cert, err := servingCert(ex)
 	if err != nil {
@@ -206,8 +225,11 @@ func restartServerAndVerify(ex Executor, n cluster.Node, sans []string, opts *Op
 	return nil
 }
 
-// CertRotate runs `rke2 certificate rotate` then restarts each server
-// sequentially and reports the new expiry.
+// CertRotate rotates RKE2 certificates on each server, one at a time,
+// following the upstream order: stop the service, rotate, start. The
+// serving cert's serial is compared before/after so the log reports
+// whether rotation actually happened — expiry alone cannot tell on a
+// freshly installed cluster.
 func CertRotate(c *cluster.Cluster, names []string, opts *Options, yes bool) error {
 	servers, err := selectServers(c, names)
 	if err != nil {
@@ -224,22 +246,20 @@ func CertRotate(c *cluster.Cluster, names []string, opts *Options, yes bool) err
 			return fmt.Errorf("%s: connect: %w", n.Name, err)
 		}
 		logf(opts, "[%s] rke2 certificate rotate", n.Name)
-		_, err = runAsRoot(ex, "/usr/local/bin/rke2 certificate rotate")
+		before, _ := servingCert(ex)
+		_, err = runAsRoot(ex, "systemctl stop rke2-server && "+
+			"/usr/local/bin/rke2 certificate rotate && systemctl start rke2-server")
 		if err == nil {
-			_, err = runAsRoot(ex, "systemctl restart rke2-server")
+			err = waitServerReady(ex, 10*time.Minute)
 		}
 		if err == nil {
-			deadline := time.Now().Add(10 * time.Minute)
-			for time.Now().Before(deadline) {
-				if r, _ := ex.RunSudo("systemctl is-active rke2-server"); r != nil && strings.TrimSpace(r.Stdout) == "active" {
-					break
-				}
-				time.Sleep(3 * time.Second)
-			}
-			cert, cerr := servingCert(ex)
-			if cerr == nil {
-				logf(opts, "[%s] rotated; apiserver cert now expires %s", n.Name,
-					cert.NotAfter.Format("2006-01-02"))
+			var cert *x509.Certificate
+			cert, err = servingCert(ex)
+			if err == nil {
+				rotated := before == nil || before.SerialNumber.Cmp(cert.SerialNumber) != 0
+				logf(opts, "[%s] rotated=%v; apiserver cert expires %s (serial …%s)",
+					n.Name, rotated, cert.NotAfter.Format("2006-01-02"),
+					cert.SerialNumber.Text(16)[max(0, len(cert.SerialNumber.Text(16))-8):])
 			}
 		}
 		ex.Close()

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -97,11 +98,12 @@ func (l *layoutRegistry) serveBlob(w http.ResponseWriter, r *http.Request, diges
 // serveBlobAs reads a content-addressed blob and reports a guessed
 // manifest media type when none is forced.
 func (l *layoutRegistry) serveBlobAs(w http.ResponseWriter, r *http.Request, digest, mediaType string) {
-	if !strings.HasPrefix(digest, "sha256:") {
+	hex := strings.TrimPrefix(digest, "sha256:")
+	if len(hex) != 64 || !isHexLower(hex) {
 		http.NotFound(w, r)
 		return
 	}
-	p := filepath.Join(l.dir, "blobs", "sha256", digest[len("sha256:"):])
+	p := filepath.Join(l.dir, "blobs", "sha256", hex)
 	f, err := os.Open(p)
 	if err != nil {
 		http.NotFound(w, r)
@@ -109,11 +111,19 @@ func (l *layoutRegistry) serveBlobAs(w http.ResponseWriter, r *http.Request, dig
 	}
 	defer f.Close()
 	st, _ := f.Stat()
-	head := make([]byte, 512)
-	n, _ := f.Read(head)
-	f.Seek(0, 0)
 	if mediaType == "" {
-		mediaType = sniffManifestType(head[:n])
+		// Manifests are a few KB at most; read the whole thing so a
+		// large index is not misclassified by a truncated probe.
+		body, err := io.ReadAll(io.LimitReader(f, 1<<20))
+		if err != nil {
+			http.Error(w, "read blob", http.StatusInternalServerError)
+			return
+		}
+		if _, err := f.Seek(0, 0); err != nil {
+			http.Error(w, "seek blob", http.StatusInternalServerError)
+			return
+		}
+		mediaType = sniffManifestType(body)
 	}
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Docker-Content-Digest", digest)
@@ -130,14 +140,35 @@ func fileDigest(b []byte) string {
 }
 
 // sniffManifestType distinguishes an image index from a single
-// manifest (blobs store both content-addressed).
-func sniffManifestType(head []byte) string {
+// manifest (blobs store both content-addressed). The declared
+// mediaType field wins; structure is the fallback.
+func sniffManifestType(body []byte) string {
 	var probe struct {
+		MediaType string            `json:"mediaType"`
 		Manifests []json.RawMessage `json:"manifests"`
 		Config    json.RawMessage   `json:"config"`
 	}
-	if json.Unmarshal(head, &probe) == nil && len(probe.Manifests) > 0 && len(probe.Config) == 0 {
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return mtManifest
+	}
+	switch probe.MediaType {
+	case mtIndex, "application/vnd.docker.distribution.manifest.list.v2+json":
+		return mtIndex
+	case mtManifest, "application/vnd.docker.distribution.manifest.v2+json":
+		return mtManifest
+	}
+	if len(probe.Manifests) > 0 && len(probe.Config) == 0 {
 		return mtIndex
 	}
 	return mtManifest
+}
+
+func isHexLower(s string) bool {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if (b < '0' || b > '9') && (b < 'a' || b > 'f') {
+			return false
+		}
+	}
+	return true
 }

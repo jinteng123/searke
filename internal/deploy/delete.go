@@ -104,7 +104,22 @@ func Delete(ctx context.Context, opts *Options, del DeleteOptions) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !del.SkipDrain {
+		// A node already gone from the API (rerun after a partial
+		// failure) has nothing to drain — drain would just NotFound.
+		// Only treat explicit not-found as absent; an unreachable API
+		// must not silently skip the drain and delete steps.
+		nodePresent := true
+		if res, err := firstExec.RunSudo(kctl + " get node " + shellQuote(n.Name)); err == nil && res.ExitCode != 0 {
+			out := res.Stderr + res.Stdout
+			if strings.Contains(out, "not found") || strings.Contains(out, "NotFound") {
+				nodePresent = false
+			} else {
+				return fmt.Errorf("%s: get node: %s", n.Name, tail(out, 400))
+			}
+		} else if err != nil {
+			return fmt.Errorf("%s: get node: %w", n.Name, err)
+		}
+		if !del.SkipDrain && nodePresent {
 			logf(opts, "  %s: drain (timeout %s)", n.Name, timeout)
 			res, err := firstExec.RunSudo(fmt.Sprintf(
 				"%s drain %s --ignore-daemonsets --delete-emptydir-data --timeout=%ds",
@@ -118,24 +133,28 @@ func Delete(ctx context.Context, opts *Options, del DeleteOptions) error {
 					tail(res.Stderr+res.Stdout, 400))
 			}
 		}
-		logf(opts, "  %s: kubectl delete node", n.Name)
-		res, err := firstExec.RunSudo(kctl + " delete node " + shellQuote(n.Name))
-		if err != nil {
-			return fmt.Errorf("%s: delete node: %w", n.Name, err)
-		}
-		if res.ExitCode != 0 {
-			// A node that is already absent needs no removal — keep
-			// going so reruns after a partial failure stay resumable.
-			out := res.Stderr + res.Stdout
-			if strings.Contains(out, "not found") || strings.Contains(out, "NotFound") {
-				logf(opts, "  %s: node already absent in the API; continuing", n.Name)
-			} else {
-				return fmt.Errorf("%s: delete node: %s", n.Name, tail(out, 400))
+		if nodePresent {
+			logf(opts, "  %s: kubectl delete node", n.Name)
+			res, err := firstExec.RunSudo(kctl + " delete node " + shellQuote(n.Name))
+			if err != nil {
+				return fmt.Errorf("%s: delete node: %w", n.Name, err)
 			}
+			if res.ExitCode != 0 {
+				// A node that is already absent needs no removal — keep
+				// going so reruns after a partial failure stay resumable.
+				out := res.Stderr + res.Stdout
+				if strings.Contains(out, "not found") || strings.Contains(out, "NotFound") {
+					logf(opts, "  %s: node already absent in the API; continuing", n.Name)
+				} else {
+					return fmt.Errorf("%s: delete node: %s", n.Name, tail(out, 400))
+				}
+			}
+		} else {
+			logf(opts, "  %s: node already absent in the API; continuing", n.Name)
 		}
 
 		if isServer[n.Name] {
-			if err := verifyEtcdMemberRemoved(ctx, firstExec, kctl, n, opts); err != nil {
+			if err := verifyEtcdMemberRemoved(ctx, firstExec, n, opts); err != nil {
 				return fmt.Errorf("%s: %w — node object removed; resolve the etcd member manually, "+
 					"then rerun to finish cleanup", n.Name, err)
 			}
@@ -167,7 +186,9 @@ func Delete(ctx context.Context, opts *Options, del DeleteOptions) error {
 			st.RemoveNode(n)
 		}
 		st.Log("delete", strings.Join(names, ","))
-		st.Save()
+		if err := st.Save(); err != nil {
+			logf(opts, "warning: state save failed: %v", err)
+		}
 	}
 	logf(opts, "deleted %s; cluster now has %d server(s) %d agent(s)",
 		nodeNameList(doomed), remaining, len(c.Spec.Agents)-len(delAgents))
@@ -226,7 +247,7 @@ func kubectlOnFirst(c *cluster.Cluster, opts *Options) (string, Executor, error)
 // Verification goes through crictl on the surviving server, not
 // `kubectl exec`, so it does not depend on the apiserver being
 // responsive while etcd settles.
-func verifyEtcdMemberRemoved(ctx context.Context, ex Executor, kctl string,
+func verifyEtcdMemberRemoved(ctx context.Context, ex Executor,
 	deleted cluster.Node, opts *Options) error {
 
 	memberList := rke2BinDir + "/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock" +
@@ -237,14 +258,20 @@ func verifyEtcdMemberRemoved(ctx context.Context, ex Executor, kctl string,
 		" --cert=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt" +
 		" --key=/var/lib/rancher/rke2/server/tls/etcd/server-client.key member list"
 
+	// Match the deleted member by its exact peer URL. A substring match
+	// on the node name or address misfires on prefixes (server-1 vs
+	// server-10) and IP prefixes (10.0.0.1 vs 10.0.0.10).
+	peerURL := "https://" + net.JoinHostPort(deleted.Address, "2380")
+
 	return waitFor(ctx, 3*time.Minute, func() (bool, error) {
 		res, err := ex.RunSudo(memberList)
 		if err != nil || res.ExitCode != 0 {
 			return false, nil // etcd still settling; retry
 		}
-		out := res.Stdout + res.Stderr
-		if strings.Contains(out, deleted.Name) || strings.Contains(out, deleted.Address) {
-			return false, nil // still a member; keep waiting
+		for _, line := range strings.Split(res.Stdout+res.Stderr, "\n") {
+			if strings.Contains(line, peerURL) {
+				return false, nil // still a member; keep waiting
+			}
 		}
 		logf(opts, "  %s: etcd member removed (verified)", deleted.Name)
 		return true, nil

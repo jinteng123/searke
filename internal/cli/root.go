@@ -426,7 +426,10 @@ func newCertCmds(file, nodesCSV *string) *cobra.Command {
 	san := &cobra.Command{
 		Use:   "san <ip-or-domain>...",
 		Short: "Add SANs to the apiserver cert on every selected server (rolling restart)",
-		Args:  cobra.MinimumNArgs(1),
+		Long: "Add SANs to the apiserver cert on every selected server.\n\n" +
+			"Successful SANs are persisted to spec.rke2Config.tls-san in cluster.yaml, so a\n" +
+			"later apply/render applies them to all servers even when --nodes selected a subset.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCertSan(*file, *nodesCSV, args, sanYes)
 		},

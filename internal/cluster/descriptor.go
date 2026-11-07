@@ -61,32 +61,7 @@ func UpdateDescriptor(path string, servers, agents []Node, ssh *SSHSpec) error {
 			setMapValue(sm, "port", intNode(ssh.Port))
 		}
 	}
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return err
-	}
-	if err := enc.Close(); err != nil {
-		return err
-	}
-	// Atomic replace: never leave a half-written descriptor.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".cluster-*.yaml")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return writeYAMLAtomic(path, &doc)
 }
 
 // RemoveFromDescriptor deletes server/agent entries whose name is in
@@ -127,31 +102,7 @@ func RemoveFromDescriptor(path string, names []string) error {
 		}
 		seq.Content = kept
 	}
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return err
-	}
-	if err := enc.Close(); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".cluster-*.yaml")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return writeYAMLAtomic(path, &doc)
 }
 
 // SetRKE2ConfigList writes a string list under spec.rke2Config[key],
@@ -182,11 +133,16 @@ func SetRKE2ConfigList(path, key string, values []string) error {
 		seq.Content = append(seq.Content, strNode(v))
 	}
 	setMapValue(cfg, key, seq)
+	return writeYAMLAtomic(path, &doc)
+}
 
+// writeYAMLAtomic encodes the document and replaces path via a temp
+// file + rename, so a crash mid-write never leaves a truncated yaml.
+func writeYAMLAtomic(path string, doc *yaml.Node) error {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
+	if err := enc.Encode(doc); err != nil {
 		return err
 	}
 	if err := enc.Close(); err != nil {

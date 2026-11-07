@@ -435,24 +435,28 @@ func renderConfig(c *cluster.Cluster, n cluster.Node, role, regURL, token string
 	}
 	m["cni"] = cni
 	m["node-name"] = n.Name
-	if isFirst {
-		// tls-san: registration + API hosts, merged with any user list.
+	// tls-san applies to every server, not just the bootstrap: the
+	// registration/API endpoint may be a VIP or LB fronting all of
+	// them, so each cert must carry it.
+	if role == "server" {
 		sans := map[string]bool{c.RegistrationHost(): true}
 		if h := apiHost(c); h != "" {
 			sans[h] = true
 		}
-		var list []string
+		var sanList []string
 		if v, ok := m["tls-san"]; ok {
 			for _, s := range toStringSlice(v) {
-				list = append(list, s)
+				sanList = append(sanList, s)
 				delete(sans, s)
 			}
 		}
 		for s := range sans {
-			list = append(list, s)
+			sanList = append(sanList, s)
 		}
-		sort.Strings(list)
-		m["tls-san"] = list
+		sort.Strings(sanList)
+		m["tls-san"] = sanList
+	}
+	if isFirst {
 		if _, ok := m["write-kubeconfig-mode"]; !ok {
 			m["write-kubeconfig-mode"] = "0600"
 		}

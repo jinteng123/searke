@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,7 +68,7 @@ func ParseNodeSelectors(csv string) []string {
 // failures do not stop the walk; they are collected and returned as
 // one aggregate error so partially-unreachable clusters still get the
 // work done on the healthy nodes.
-func forEachNode(c *cluster.Cluster, names []string, log func(string, ...any),
+func forEachNode(c *cluster.Cluster, names []string,
 	fn func(cluster.Node, Executor) error) error {
 
 	nodes, err := selectNodes(c, names)
@@ -114,7 +115,7 @@ func runAsRoot(ex Executor, cmd string) (*Result, error) {
 // output under a [node] prefix. Failures on individual nodes do not
 // abort the rest.
 func Exec(c *cluster.Cluster, names []string, command string, log func(string, ...any)) error {
-	return forEachNode(c, names, log, func(n cluster.Node, ex Executor) error {
+	return forEachNode(c, names, func(n cluster.Node, ex Executor) error {
 		res, err := ex.RunSudo(command)
 		if err != nil {
 			return err
@@ -145,9 +146,16 @@ func Exec(c *cluster.Cluster, names []string, command string, log func(string, .
 func Scp(c *cluster.Cluster, names []string, local, remote string,
 	download bool, log func(string, ...any)) error {
 
-	return forEachNode(c, names, log, func(n cluster.Node, ex Executor) error {
+	// Preserve the local file's permission bits on upload — a script
+	// pushed with 0644 would silently lose its exec bit.
+	mode := os.FileMode(0o644)
+	if st, err := os.Stat(local); err == nil {
+		mode = st.Mode().Perm()
+	}
+
+	return forEachNode(c, names, func(n cluster.Node, ex Executor) error {
 		if !download {
-			if err := ex.UploadFile(local, remote, 0o644); err != nil {
+			if err := ex.UploadFile(local, remote, mode); err != nil {
 				return err
 			}
 			log("[%s] uploaded %s -> %s", n.Name, local, remote)
@@ -172,12 +180,20 @@ const hostsBlockEnd = "# searke-hosts-end"
 func HostsSync(c *cluster.Cluster, names []string, log func(string, ...any)) error {
 	var block strings.Builder
 	block.WriteString(hostsBlockBegin + "\n")
+	entries := 0
 	for _, n := range c.AllNodes() {
+		// Only routable IPs belong in /etc/hosts — a node addressed by
+		// hostname or loopback would poison every peer's resolution.
+		ip := net.ParseIP(n.Address)
+		if ip == nil || ip.IsLoopback() {
+			continue
+		}
 		block.WriteString(n.Address + " " + n.Name + "\n")
+		entries++
 	}
 	block.WriteString(hostsBlockEnd + "\n")
 
-	return forEachNode(c, names, log, func(n cluster.Node, ex Executor) error {
+	return forEachNode(c, names, func(n cluster.Node, ex Executor) error {
 		res, err := ex.RunSudo("cat /etc/hosts")
 		if err != nil {
 			return err
@@ -189,12 +205,13 @@ func HostsSync(c *cluster.Cluster, names []string, log func(string, ...any)) err
 		if err := ex.WriteFile("/etc/hosts", []byte(merged), 0o644); err != nil {
 			return err
 		}
-		// cloud-init (Alibaba Cloud images enable it) can rewrite
-		// /etc/hosts at boot and drop the managed block.
-		if r, _ := ex.RunSudo("grep -rl 'manage_etc_hosts' /etc/cloud/ 2>/dev/null"); r != nil && strings.TrimSpace(r.Stdout) != "" {
+		// cloud-init can rewrite /etc/hosts at boot and drop the
+		// managed block — but only when actually enabled in
+		// cloud.cfg/cloud.cfg.d. (Alibaba Cloud images enable it.)
+		if r, _ := ex.RunSudo(`grep -rE 'manage_etc_hosts: *(true|True|localhost)' /etc/cloud/cloud.cfg /etc/cloud/cloud.cfg.d/ 2>/dev/null`); r != nil && strings.TrimSpace(r.Stdout) != "" {
 			log("[%s] warning: cloud-init manages /etc/hosts and may revert this on reboot", n.Name)
 		}
-		log("[%s] /etc/hosts synced (%d entries)", n.Name, len(c.AllNodes()))
+		log("[%s] /etc/hosts synced (%d entries)", n.Name, entries)
 		return nil
 	})
 }
@@ -223,11 +240,24 @@ func replaceHostsBlock(current, block string) string {
 
 // SetHostname renames nodes via hostnamectl. A node that already has
 // RKE2 installed refuses the rename unless force is set, since the
-// node name is embedded in kubelet/etcd state.
+// node name is embedded in kubelet/etcd state. An explicit hostname
+// applies to a single node only — renaming every node to the same
+// name would break etcd/k8s identity.
 func SetHostname(c *cluster.Cluster, names []string, hostname string,
 	force bool, log func(string, ...any)) error {
 
-	return forEachNode(c, names, log, func(n cluster.Node, ex Executor) error {
+	if hostname != "" {
+		nodes, err := selectNodes(c, names)
+		if err != nil {
+			return err
+		}
+		if len(nodes) != 1 {
+			return fmt.Errorf("an explicit hostname applies to exactly one node; "+
+				"pass --nodes to select it (%d selected)", len(nodes))
+		}
+	}
+
+	return forEachNode(c, names, func(n cluster.Node, ex Executor) error {
 		if r, _ := ex.RunSudo("test -d /var/lib/rancher/rke2"); r != nil && r.ExitCode == 0 && !force {
 			return fmt.Errorf("RKE2 already installed; refusing to rename without --force")
 		}
@@ -237,6 +267,12 @@ func SetHostname(c *cluster.Cluster, names []string, hostname string,
 		}
 		if _, err := runAsRoot(ex, "hostnamectl set-hostname "+shellQuote(target)); err != nil {
 			return err
+		}
+		// Update the 127.0.1.1 self-reference or every sudo prints
+		// "unable to resolve host".
+		if _, err := runAsRoot(ex, "sed -i -E 's/^(127\\.0\\.1\\.1[[:space:]]+).*/\\1'"+
+			shellQuote(target)+"/' /etc/hosts"); err != nil {
+			return fmt.Errorf("hostname set but /etc/hosts update failed: %w", err)
 		}
 		log("[%s] hostname set to %s", n.Name, target)
 		return nil
@@ -269,9 +305,17 @@ func FetchKubeconfig(c *cluster.Cluster, outDir string, log func(string, ...any)
 		return "", err
 	}
 	// The on-node kubeconfig points at the supervisor loopback; clients
-	// reaching the API from outside need the server address.
+	// reaching the API from outside need a reachable address. Prefer
+	// the declared apiAddress (VIP/LB) — it is the SAN the serving
+	// cert carries — and fall back to the first server's own address.
+	host := first.Address
+	if h := apiHost(c); h != "" {
+		if ip := net.ParseIP(h); ip == nil || !ip.IsLoopback() {
+			host = h
+		}
+	}
 	content := strings.ReplaceAll(string(raw), "https://127.0.0.1:6443",
-		"https://"+first.Address+":6443")
+		"https://"+net.JoinHostPort(host, "6443"))
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return "", err
 	}

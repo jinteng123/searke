@@ -262,10 +262,14 @@ func (c *Client) DownloadFile(remote, local string) error {
 	return nil
 }
 
-// WriteFile writes small text content to a remote path as root.
+// WriteFile writes small text content to a remote path as root. The
+// content lands via a temp file + rename so a dropped connection can
+// never leave a half-written file behind.
 func (c *Client) WriteFile(remote string, content []byte, mode os.FileMode) error {
-	res, err := c.RunStdin(fmt.Sprintf("umask 077; tee %s > /dev/null && chmod %o %s",
-		shellQuote(remote), mode, shellQuote(remote)), content)
+	tmp := remote + ".searke-tmp"
+	res, err := c.RunStdin(fmt.Sprintf(
+		"umask 077; tee %s > /dev/null && chmod %o %s && mv %s %s",
+		shellQuote(tmp), mode, shellQuote(tmp), shellQuote(tmp), shellQuote(remote)), content)
 	if err != nil {
 		return err
 	}
