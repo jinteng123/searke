@@ -319,7 +319,7 @@ func newClusterCmds() []*cobra.Command {
 		},
 	}
 
-	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd} {
+	for _, c := range []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd, delCmd} {
 		flag(c)
 	}
 	snap := newSnapshotCmd(&file)

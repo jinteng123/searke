@@ -45,7 +45,7 @@ func Status(opts *Options) error {
 		return nil
 	}
 	defer cl.Close()
-	res, err := cl.RunSudo(fmt.Sprintf("%s --kubeconfig %s get nodes -o wide --no-headers 2>/dev/null", kubectlPath, kubeconfigPath))
+	res, err := cl.RunSudo(fmt.Sprintf("%s --kubeconfig %s --request-timeout=90s get nodes -o wide --no-headers 2>/dev/null", kubectlPath, kubeconfigPath))
 	if err != nil || res.ExitCode != 0 || strings.TrimSpace(res.Stdout) == "" {
 		logf(opts, "live status: kubectl on %s not ready", first.Name)
 		return nil

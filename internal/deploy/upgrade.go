@@ -175,7 +175,7 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 // drainNode cordons+drains (drain=true) or uncordons a node via kubectl
 // on the bootstrap server.
 func drainNode(first *nodeRuntime, r *nodeRuntime, drain bool, opts *Options) error {
-	kctl := fmt.Sprintf("%s --kubeconfig %s", kubectlPath, kubeconfigPath)
+	kctl := fmt.Sprintf("%s --kubeconfig %s --request-timeout=90s", kubectlPath, kubeconfigPath)
 	var cmd string
 	if drain {
 		logf(opts, "  %s: drain", r.node.Name)

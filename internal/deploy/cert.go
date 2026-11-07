@@ -172,7 +172,7 @@ func restartServerAndVerify(ex Executor, n cluster.Node, sans []string, opts *Op
 	if _, err := runAsRoot(ex, "systemctl restart rke2-server"); err != nil {
 		return fmt.Errorf("restart rke2-server: %w", err)
 	}
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
 		if r, _ := ex.RunSudo("systemctl is-active rke2-server"); r != nil && strings.TrimSpace(r.Stdout) == "active" {
 			break
@@ -180,7 +180,7 @@ func restartServerAndVerify(ex Executor, n cluster.Node, sans []string, opts *Op
 		time.Sleep(3 * time.Second)
 	}
 	if r, _ := ex.RunSudo("systemctl is-active rke2-server"); r == nil || strings.TrimSpace(r.Stdout) != "active" {
-		return fmt.Errorf("rke2-server did not come back active within 120s")
+		return fmt.Errorf("rke2-server did not come back active within 10m")
 	}
 	cert, err := servingCert(ex)
 	if err != nil {
@@ -229,7 +229,7 @@ func CertRotate(c *cluster.Cluster, names []string, opts *Options, yes bool) err
 			_, err = runAsRoot(ex, "systemctl restart rke2-server")
 		}
 		if err == nil {
-			deadline := time.Now().Add(120 * time.Second)
+			deadline := time.Now().Add(10 * time.Minute)
 			for time.Now().Before(deadline) {
 				if r, _ := ex.RunSudo("systemctl is-active rke2-server"); r != nil && strings.TrimSpace(r.Stdout) == "active" {
 					break

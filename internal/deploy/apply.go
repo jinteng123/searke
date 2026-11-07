@@ -30,6 +30,7 @@ const (
 	nodeTokenPath   = "/var/lib/rancher/rke2/server/node-token"
 	kubectlPath     = "/var/lib/rancher/rke2/bin/kubectl"
 	kubeconfigPath  = "/etc/rancher/rke2/rke2.yaml"
+	rke2BinDir      = "/var/lib/rancher/rke2/bin"
 )
 
 // Options controls Validate/Plan/Apply runs.
@@ -606,7 +607,7 @@ func fetchToken(first *nodeRuntime) (string, error) {
 
 // waitReady polls kubectl on the bootstrap server until every node is Ready.
 func waitReady(ctx context.Context, first *nodeRuntime, names map[string]string, opts *Options) error {
-	kctl := fmt.Sprintf("%s --kubeconfig %s", kubectlPath, kubeconfigPath)
+	kctl := fmt.Sprintf("%s --kubeconfig %s --request-timeout=90s", kubectlPath, kubeconfigPath)
 	return waitFor(ctx, 5*time.Minute, func() (bool, error) {
 		res, err := first.client.RunSudo(kctl + " get nodes --no-headers")
 		if err != nil || res.ExitCode != 0 {

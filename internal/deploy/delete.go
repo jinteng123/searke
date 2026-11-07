@@ -124,7 +124,14 @@ func Delete(ctx context.Context, opts *Options, del DeleteOptions) error {
 			return fmt.Errorf("%s: delete node: %w", n.Name, err)
 		}
 		if res.ExitCode != 0 {
-			return fmt.Errorf("%s: delete node: %s", n.Name, tail(res.Stderr+res.Stdout, 400))
+			// A node that is already absent needs no removal — keep
+			// going so reruns after a partial failure stay resumable.
+			out := res.Stderr + res.Stdout
+			if strings.Contains(out, "not found") || strings.Contains(out, "NotFound") {
+				logf(opts, "  %s: node already absent in the API; continuing", n.Name)
+			} else {
+				return fmt.Errorf("%s: delete node: %s", n.Name, tail(out, 400))
+			}
 		}
 
 		if isServer[n.Name] {
@@ -205,33 +212,33 @@ func kubectlOnFirst(c *cluster.Cluster, opts *Options) (string, Executor, error)
 	if err != nil {
 		return "", nil, fmt.Errorf("connect bootstrap server %s: %w", first.Name, err)
 	}
-	return fmt.Sprintf("%s --kubeconfig %s", kubectlPath, kubeconfigPath), ex, nil
+	// Nested/virtualized clusters can take far longer than client-go's
+	// ~32s default to complete a write; give every call a wide margin.
+	return fmt.Sprintf("%s --kubeconfig %s --request-timeout=90s", kubectlPath, kubeconfigPath), ex, nil
 }
 
-// verifyEtcdMemberRemoved polls `etcdctl member list` inside a
-// surviving etcd pod until the deleted server disappears. RKE2's
-// controller removes the member when the Node object goes away, but
-// that is asynchronous — treat it as authoritative before we wipe the
-// node's data dir.
+// verifyEtcdMemberRemoved polls `etcdctl member list` inside the
+// surviving server's etcd container until the deleted server
+// disappears. RKE2's controller removes the member when the Node
+// object goes away, but that is asynchronous — treat it as
+// authoritative before we wipe the node's data dir.
+//
+// Verification goes through crictl on the surviving server, not
+// `kubectl exec`, so it does not depend on the apiserver being
+// responsive while etcd settles.
 func verifyEtcdMemberRemoved(ctx context.Context, ex Executor, kctl string,
 	deleted cluster.Node, opts *Options) error {
 
-	// Any surviving etcd pod works; pick the first listed.
-	return waitFor(ctx, 60*time.Second, func() (bool, error) {
-		res, err := ex.RunSudo(kctl +
-			" -n kube-system get pods -l component=etcd --field-selector=status.phase=Running" +
-			" -o jsonpath={.items[0].metadata.name}")
-		if err != nil || res.ExitCode != 0 || strings.TrimSpace(res.Stdout) == "" {
-			return false, nil
-		}
-		pod := strings.TrimSpace(res.Stdout)
-		res, err = ex.RunSudo(fmt.Sprintf(
-			"%s -n kube-system exec %s -- etcdctl"+
-				" --endpoints=https://127.0.0.1:2379"+
-				" --cacert=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt"+
-				" --cert=/var/lib/rancher/rke2/server/tls/etcd/client.crt"+
-				" --key=/var/lib/rancher/rke2/server/tls/etcd/client.key member list",
-			kctl, shellQuote(pod)))
+	memberList := rke2BinDir + "/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock" +
+		" exec $( " + rke2BinDir + "/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock" +
+		" ps -q --name '^etcd$' | head -1 ) etcdctl" +
+		" --endpoints=https://127.0.0.1:2379" +
+		" --cacert=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt" +
+		" --cert=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt" +
+		" --key=/var/lib/rancher/rke2/server/tls/etcd/server-client.key member list"
+
+	return waitFor(ctx, 3*time.Minute, func() (bool, error) {
+		res, err := ex.RunSudo(memberList)
 		if err != nil || res.ExitCode != 0 {
 			return false, nil // etcd still settling; retry
 		}
