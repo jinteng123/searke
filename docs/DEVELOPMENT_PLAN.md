@@ -16,6 +16,8 @@
 | 阶段 3：`validate/plan/apply` | ✅ 完成 | Parallels Ubuntu 22.04 arm64 VM 实测：SSH apply 单节点 + agent join 组成 2 节点集群、幂等重跑、本机节点本地执行安装全部通过；preflight 拦获并处理了缺省路由、主机名重复、known_hosts 算法不匹配等实机问题 |
 | 阶段 4：`status`+生命周期 | ✅ 部分验证 | `status`（状态+live kubectl）与 `snapshot save/list/pull` 实机通过；`snapshot restore` HA 流程、`upgrade` 滚动升级、3-server HA 拓扑、`image push` 实机待验证 |
 
+**二期计划：** 对齐 Sealos 常用命令（`delete` 缩容、`exec`/`scp`、`cert`、`kubeconfig` 等）见 `docs/SEALOS_PARITY_PLAN.md`。
+
 **实现期新增决策：** 开发环境实测 `raw.githubusercontent.com` 与 GitHub Release 资产域名间歇不可达。下载器采用**信任锚模型**：先经 `api.github.com` 读取 release 元数据（兼作"tag 与资产存在"预检）；sha256sum 清单与 `install.sh` 只从 GitHub 控制端点获取（Release 资产 API / contents API），绝不走第三方镜像；大体积制品允许经 gh-proxy.com / ghproxy.net 传输，但全部按受信清单校验 SHA256。连接级超时 10s、响应头 30s、body 停滞 45s 即切换候选并断点续传。全部下载先入临时目录，校验通过后整体原子替换输出目录。
 
 **本地执行（local execution，仿 sealos）：** 节点 `address` 指向本机时 `Connect` 返回 `LocalExecutor` 而非 SSH client——命令经 `sh -c` 直跑、文件分发变成本地拷贝，apply/upgrade/snapshot/status 全部生效且编排代码零改动。探测范围：loopback、`localhost`、本机 hostname、本机网卡地址，与远端 SSH 节点可在同一集群混用。root 运行 searke 时特权操作直跑；非 root + `ssh.sudo: true` 走 `sudo -n` 与 staging 目录，语义与 SSH 路径一致。全部节点为本机地址时 `spec.ssh.user` 可省略。
