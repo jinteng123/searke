@@ -83,6 +83,7 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke hosts sync -f cluster.yaml` | ✅ 已实现（多节点真机待验） | 向每个节点 `/etc/hosts` 写入 `# searke-hosts-begin/end` 管理块（幂等替换）；检测到 cloud-init `manage_etc_hosts` 时警告可能被重启覆盖 |
 | `searke hostname [name] [--force]` | ✅ 已实现（多节点真机待验） | `hostnamectl` 改名（缺省用描述里的节点名）；已装 RKE2 的节点默认拒绝 |
 | `searke kubeconfig -f cluster.yaml -o <dir>` | ✅ 已实现（真机待验） | 从首 server 拉 `rke2.yaml`，server 地址改写为可达地址，写 `<cluster>-kubeconfig` 0600；不打印到 stdout |
+| `searke delete --servers/--agents <name>...` | ✅ 已实现（**3-server 真机待验**） | 节点缩容：drain（`--drain-timeout`，超时即中止不改 yaml）→ `kubectl delete node` → server 额外核验 etcd member 移除（pod 内 etcdctl，轮询至消失）→ 节点本机跑上游卸载脚本 → **最后**才原子改写 cluster.yaml 与 state。护栏：server 必须保持奇数（方案A）、首 server 与 registration 地址不可删、需 `--yes`、`--dry-run` 出计划、 `--skip-drain` 可跳过驱逐 |
 
 ## 快速流程
 

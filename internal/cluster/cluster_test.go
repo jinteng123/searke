@@ -1,6 +1,11 @@
 package cluster
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func valid() *Cluster {
 	c := &Cluster{APIVersion: APIVersion, Kind: Kind}
@@ -53,5 +58,34 @@ func TestValidateRejects(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("%s: should fail", name)
 		}
+	}
+}
+
+func TestRemoveFromDescriptor(t *testing.T) {
+	yaml := `apiVersion: searke.io/v1alpha1
+kind: Cluster
+metadata:
+  name: t
+spec:
+  servers: # keep me
+    - { name: m1, address: 10.0.0.1 }
+    - { name: m2, address: 10.0.0.2 }
+  agents:
+    - { name: w1, address: 10.0.1.1 }
+`
+	p := filepath.Join(t.TempDir(), "cluster.yaml")
+	if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveFromDescriptor(p, []string{"m2", "w1"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	s := string(data)
+	if strings.Contains(s, "m2") || strings.Contains(s, "w1") {
+		t.Fatalf("nodes not removed:\n%s", s)
+	}
+	if !strings.Contains(s, "m1") || !strings.Contains(s, "keep me") {
+		t.Fatalf("surviving entry/comment lost:\n%s", s)
 	}
 }

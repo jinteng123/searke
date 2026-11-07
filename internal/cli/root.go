@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -243,6 +244,31 @@ func newClusterCmds() []*cobra.Command {
 	addCmd.Flags().IntVar(&add.SSHPort, "ssh-port", 0, "set spec.ssh.port")
 	addCmd.Flags().BoolVar(&addDryRun, "dry-run", false, "show the plan without modifying cluster.yaml or the nodes")
 
+	var del deploy.DeleteOptions
+	delCmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Remove nodes: drain, delete from cluster, uninstall RKE2, update cluster.yaml",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDelete(cmd.Context(), file, del)
+		},
+	}
+	delCmd.Flags().StringSliceVar(&del.Servers, "servers", nil, "server names/addresses to remove (alias: --masters)")
+	delCmd.Flags().StringSliceVar(&del.Agents, "agents", nil, "agent names/addresses to remove (alias: --nodes)")
+	delCmd.Flags().SetNormalizeFunc(func(f *pflag.FlagSet, name string) pflag.NormalizedName {
+		switch name {
+		case "masters":
+			name = "servers"
+		case "nodes":
+			name = "agents"
+		}
+		return pflag.NormalizedName(name)
+	})
+	delCmd.Flags().BoolVar(&del.Yes, "yes", false, "confirm removal (required)")
+	delCmd.Flags().BoolVar(&del.DryRun, "dry-run", false, "show the plan without touching nodes or cluster.yaml")
+	delCmd.Flags().BoolVar(&del.SkipDrain, "skip-drain", false, "do not kubectl drain nodes before removal")
+	delCmd.Flags().DurationVar(&del.DrainTimeout, "drain-timeout", 120*time.Second, "kubectl drain timeout")
+
 	var loginUser, loginPass string
 	var loginInsecure, passStdin bool
 	login := &cobra.Command{
@@ -285,7 +311,7 @@ func newClusterCmds() []*cobra.Command {
 		flag(c)
 	}
 	snap := newSnapshotCmd(&file)
-	cmds := []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd,
+	cmds := []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd, delCmd,
 		run, snap, login, logout}
 	return append(cmds, newOpsCmds(&file)...)
 }

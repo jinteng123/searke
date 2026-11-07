@@ -89,6 +89,71 @@ func UpdateDescriptor(path string, servers, agents []Node, ssh *SSHSpec) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// RemoveFromDescriptor deletes server/agent entries whose name is in
+// names. Same atomic temp+rename write as UpdateDescriptor; comments
+// outside the lists are preserved.
+func RemoveFromDescriptor(path string, names []string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: expected a mapping document", path)
+	}
+	spec := mapValue(doc.Content[0], "spec")
+	if spec == nil || spec.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: no spec section found", path)
+	}
+	drop := map[string]bool{}
+	for _, n := range names {
+		drop[n] = true
+	}
+	for _, key := range []string{"servers", "agents"} {
+		seq := mapValue(spec, key)
+		if seq == nil || seq.Kind != yaml.SequenceNode {
+			continue
+		}
+		var kept []*yaml.Node
+		for _, entry := range seq.Content {
+			nv := mapValue(entry, "name")
+			if nv != nil && drop[nv.Value] {
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		seq.Content = kept
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cluster-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
 func mapValue(m *yaml.Node, key string) *yaml.Node {
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value == key {

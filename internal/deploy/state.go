@@ -146,6 +146,12 @@ func (s *State) Log(action, detail string) error {
 	return s.Save()
 }
 
+// RemoveNode drops a node's recorded state (used by `searke delete`
+// after the node has left the cluster).
+func (s *State) RemoveNode(name string) {
+	delete(s.Nodes, name)
+}
+
 // Reset deletes the state file entirely — used by uninstall so a fresh
 // apply starts from a clean slate.
 func (s *State) Reset() error {

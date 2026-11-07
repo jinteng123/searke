@@ -265,3 +265,7 @@ func runLogout(registry string) error {
 	logf("removed credential for %s", registry)
 	return nil
 }
+
+func runDelete(ctx context.Context, file string, del deploy.DeleteOptions) error {
+	return deploy.Delete(ctx, deployOpts(file), del)
+}

@@ -176,7 +176,7 @@ searke image serve dist/rke2-oci --listen :5000 [--tls-cert ... --tls-key ...]
 | 0 | 共用设施：`selectNodes`、`forEachNode` 聚合错误、SSH helper 收敛为 `sshConfig()`、ldflags 版本注入 | 单测 | ✅ 已实现 |
 | 1 | `version` / `gen` / `image pull` / `image inspect`（`completion` 为 cobra 自带） | `inspect`/`gen`/`version` 本地实跑 | ✅ 已实现 |
 | 2 | `exec` / `scp` / `hosts sync` / `hostname` / `kubeconfig` | exec/scp 本机（local executor）实跑；其余逻辑单测；**多节点真机待验** | ✅ 已实现，真机待验 |
-| 3 | **`delete`**（含 `RemoveFromDescriptor` / `State.RemoveNode`） | 真机：删 agent→加回；改成 3 server 后删 2 台 | ⬜ 未开始 |
+| 3 | **`delete`**（`RemoveFromDescriptor` / `State.RemoveNode` / drain 超时 / etcd member 核验 / 方案A 奇数护栏 / 首server+registration 保护） | 守卫逻辑单测全过；**3-server 真机待验** | ✅ 已实现，真机待验 |
 | 4 | `cert check/san/rotate` | 真机：新 SAN 能通过 TLS，rotate 后 NotAfter 刷新 | ⬜ 未开始 |
 | 5 | `image serve` | `searke run <serve地址>/rke2:tag --insecure` 端到端 | ⬜ 未开始 |
 
