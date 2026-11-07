@@ -3,3 +3,9 @@
 /searke
 *.part
 .DS_Store
+
+# test lab artifacts (ISOs, generated cidata images, local state)
+/testlab/iso/
+/testlab/seed/cidata.iso
+/testlab/seed/*/cidata.iso
+/testlab/.searke*

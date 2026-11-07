@@ -1,0 +1,21 @@
+#cloud-config
+autoinstall:
+  version: 1
+  identity:
+    hostname: m2
+    username: searke
+    password: "$6$abc123$bg6cY4zyPKZ7/OhDKnpvH1C6eLem5/QZaoP/ko4Jp4pA0IOgSFWMSPM7k8jXmWtO9fnDotIK6m3/24muqhIsT."
+  ssh:
+    install-server: true
+    authorized-keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFPTF3R6JpPqOibZGH8QelTR/fiiu2er5ZFlwaJ+W/gy searke-test"
+  sudo: "ALL=(ALL) NOPASSWD:ALL"
+  storage:
+    layout:
+      name: direct
+  packages:
+    - curl
+    - iptables
+  late-commands:
+    - curtin in-target -- systemctl enable ssh
+    - echo "searke ALL=(ALL) NOPASSWD:ALL" > /target/etc/sudoers.d/searke

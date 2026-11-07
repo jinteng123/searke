@@ -341,7 +341,11 @@ func newOpsCmds(file *string) []*cobra.Command {
 		Short: "Run a shell command as root on the selected nodes",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runExec(*file, nodesCSV, strings.Join(args, " "))
+			quoted := make([]string, len(args))
+			for i, a := range args {
+				quoted[i] = deploy.ShellQuote(a)
+			}
+			return runExec(*file, nodesCSV, strings.Join(quoted, " "))
 		},
 	}
 	nodeFlag(execCmd)

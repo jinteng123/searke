@@ -1,0 +1,24 @@
+apiVersion: searke.io/v1alpha1
+kind: Cluster
+metadata:
+  name: rke2-parallels
+spec:
+  rke2:
+    bundle: /Users/jint/code/searke/dist/rke2-v1.36.5-rke2r1-multiarch.oci.tar
+    cni: canal
+  ssh:
+    user: searke
+    identityFile: ~/.ssh/id_ed25519
+    sudo: true
+  endpoints:
+    registrationAddress: 10.211.55.10:9345
+    apiAddress: 10.211.55.10:6443
+  servers:
+    - {name: m1, address: 10.211.55.10}
+    - {name: server-1, address: 10.211.55.13}
+    - {name: server-2, address: 10.211.55.15}
+  rke2Config:
+    cluster-cidr: 10.42.0.0/16
+    service-cidr: 10.43.0.0/16
+    tls-san:
+      - 10.211.55.100

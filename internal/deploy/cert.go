@@ -224,7 +224,7 @@ func CertRotate(c *cluster.Cluster, names []string, opts *Options, yes bool) err
 			return fmt.Errorf("%s: connect: %w", n.Name, err)
 		}
 		logf(opts, "[%s] rke2 certificate rotate", n.Name)
-		_, err = runAsRoot(ex, "/var/lib/rancher/rke2/bin/rke2 certificate rotate")
+		_, err = runAsRoot(ex, "/usr/local/bin/rke2 certificate rotate")
 		if err == nil {
 			_, err = runAsRoot(ex, "systemctl restart rke2-server")
 		}

@@ -79,14 +79,14 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke image pull <ref> -o <dir>` | ✅ 已实现 | registry → 本地 OCI layout（`--insecure` 走 HTTP） |
 | `searke image inspect <ref\|dir\|tar>` | ✅ 已实现 | 打印 index 的 rke2 版本/CNI/平台与 manifest digest |
 | `searke exec -f cluster.yaml [--nodes a,b] -- <cmd>` | ✅ 已实现（3 节点真机已验） | 在选中节点上以 root 执行命令，输出带 `[node]` 前缀；单节点失败不中断，最后聚合报错 |
-| `searke scp -f cluster.yaml [--nodes a,b] <local> <remote>` | ✅ 已实现（多节点真机待验） | 上传文件到所有选中节点；`--download` 反向拉取到 `<local>/<node>-<basename>` |
+| `searke scp -f cluster.yaml [--nodes a,b] <local> <remote>` | ✅ 已实现（3-server 真机已验） | 上传文件到所有选中节点；`--download` 反向拉取到 `<local>/<node>-<basename>` |
 | `searke hosts sync -f cluster.yaml` | ✅ 已实现（3 节点真机已验） | 向每个节点 `/etc/hosts` 写入 `# searke-hosts-begin/end` 管理块（幂等替换）；检测到 cloud-init `manage_etc_hosts` 时警告可能被重启覆盖 |
-| `searke hostname [name] [--force]` | ✅ 已实现（多节点真机待验） | `hostnamectl` 改名（缺省用描述里的节点名）；已装 RKE2 的节点默认拒绝 |
-| `searke kubeconfig -f cluster.yaml -o <dir>` | ✅ 已实现（真机待验） | 从首 server 拉 `rke2.yaml`，server 地址改写为可达地址，写 `<cluster>-kubeconfig` 0600；不打印到 stdout |
-| `searke delete --servers/--agents <name>...` | ✅ 已实现（真机已验：奇数护栏、drain 超时中止、etcd member 核验链路；全链路 e2e 待稳态环境补验） | 节点缩容：drain（`--drain-timeout`，超时即中止不改 yaml）→ `kubectl delete node` → server 额外核验 etcd member 移除（pod 内 etcdctl，轮询至消失）→ 节点本机跑上游卸载脚本 → **最后**才原子改写 cluster.yaml 与 state。护栏：server 必须保持奇数（方案A）、首 server 与 registration 地址不可删、需 `--yes`、`--dry-run` 出计划、 `--skip-drain` 可跳过驱逐 |
+| `searke hostname [name] [--force]` | ✅ 已实现（3-server 真机已验） | `hostnamectl` 改名（缺省用描述里的节点名）；已装 RKE2 的节点默认拒绝 |
+| `searke kubeconfig -f cluster.yaml -o <dir>` | ✅ 已实现（3-server 真机已验） | 从首 server 拉 `rke2.yaml`，server 地址改写为可达地址，写 `<cluster>-kubeconfig` 0600；不打印到 stdout |
+| `searke delete --servers/--agents <name>...` | ✅ 已实现（3-server 真机全链路已验） | 节点缩容：drain（`--drain-timeout`，超时即中止不改 yaml）→ `kubectl delete node` → server 额外核验 etcd member 移除（pod 内 etcdctl，轮询至消失）→ 节点本机跑上游卸载脚本 → **最后**才原子改写 cluster.yaml 与 state。护栏：server 必须保持奇数（方案A）、首 server 与 registration 地址不可删、需 `--yes`、`--dry-run` 出计划、 `--skip-drain` 可跳过驱逐 |
 | `searke cert check` | ✅ 已实现（3-server 真机已验） | 拉取各 server apiserver 服务证书本地解析：到期时间 + SAN 列表，<30 天告警；不需要节点上 openssl |
-| `searke cert san <ip/domain>... --yes` | ✅ 已实现（真机已验证书生效；yaml 持久化待全链路跑通） | 每台 server：读远端 config.yaml 合并 tls-san → 逐台 `systemctl restart rke2-server` → 重拉证书核验新 SAN 生效 → 全部成功才把 tls-san 写回 spec.rke2Config（升级/重写配置不丢） |
-| `searke cert rotate --yes` | ✅ 已实现（真机待验） | 逐台跑 `rke2 certificate rotate` + 重启 + 等 active + 报新到期日 |
+| `searke cert san <ip/domain>... --yes` | ✅ 已实现（3-server 真机已验，含 yaml 持久化） | 每台 server：读远端 config.yaml 合并 tls-san → 逐台 `systemctl restart rke2-server` → 重拉证书核验新 SAN 生效 → 全部成功才把 tls-san 写回 spec.rke2Config（升级/重写配置不丢） |
+| `searke cert rotate --yes` | ✅ 已实现（3-server 真机已验） | 逐台跑 `rke2 certificate rotate` + 重启 + 等 active + 报新到期日 |
 | `searke image serve <dir> --address :port` | ✅ 已实现并端到端验证 | 本地 OCI layout 目录暴露为只读 HTTP registry（无认证，请绑可信网卡）；已验证 `image pull --insecure` 完整拉回且 digest 一致 |
 
 ## 快速流程
@@ -211,7 +211,7 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 
 - `image push`/`login` 已在本机 `registry:2`（HTTP + htpasswd）和阿里云 ACR 真实验证：`searke/rke2:v1.36.5-rke2r1`（gzip 层双架构 index + `-amd64`/`-arm64` 单架构 tag）、`searke/searke:latest`/`v0.1.0`（工具镜像）。注意 ACR 拒绝 zstd 层（`BLOB_TYPE_INVALID`），推送前需 `image build --compression gzip`
 - cluster.yaml `spec.rke2.insecure: true` 可让 `bundle: <registry-ref>` 走 HTTP；`searke run` 对应 `--insecure` |
-- 已真实验证（Parallels Ubuntu 22.04 **arm64** VM，RKE2 v1.36.5+rke2r1）：SSH `apply` 单节点 + agent join 成 2 节点集群、幂等重跑跳过、`status` 实时视图、`snapshot save/list/pull`、VM 内 `searke run` 本地执行安装单节点、`uninstall` 卸载后全新重装闭环、`searke add` 增量扩容（3 节点 Ready）
-- 未真实验证：`upgrade`、HA `snapshot restore`、3-server HA 拓扑
+- 已真实验证（Parallels Ubuntu 24.04 **arm64** 独立 VM ×3，真实 SSH，RKE2 v1.36.5+rke2r1）：**3-server HA 拓扑完整生命周期**——`apply` 三控制面全 Ready、`exec`/`scp` 上下行、`hosts sync`、`kubeconfig` 本地直连、`cert check/san/rotate` 全链路、`delete` 缩容（3→1：drain→delete node→etcd member 核验→卸载→yaml 更新，member list 确认为 1）、`add` 回补（1→3 全 Ready）、`status` 实时视图。另在早期 2 节点环境验过 `searke run` 单节点、`uninstall` 重装闭环、`snapshot save/list/pull`、幂等重跑
+- 未真实验证：`upgrade`、HA `snapshot restore`
 - 节点 OS：RKE2 tar 安装与发行版无关，preflight 仅警告非 Ubuntu 发行版（Ubuntu 22.04 为已验证基线）。硬性限制：SELinux 必须为 Permissive/Disabled（tar 安装不含 rke2-selinux 策略）；firewalld active / NetworkManager 未豁免 `cali*`/`flannel*` / 缺 iptables 各给一条警告
 - 节点增删、CNI profile 扩展未做（计划明确缓议）

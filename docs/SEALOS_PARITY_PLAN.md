@@ -1,6 +1,6 @@
 # Searke 开发计划（二期）：对齐 Sealos 常用命令
 
-- 文档状态：批次 0-5 全部已实现；image serve 已端到端验证；真机验证（3-server 嵌套容器环境）完成大部分：exec/hosts sync/cert check/cert-san-证书生效/delete 守卫与 drain 中止路径已验；delete 全链路（node 删除→etcd member 移除→卸载→yaml 更新）与 cert rotate 因嵌套环境 API 不稳定未完整跑通，待真实主机环境补验
+- 文档状态：批次 0-5 全部已实现并**在真实 Parallels VM 环境（3×Ubuntu 24.04 arm64，独立虚拟机+真实 SSH）端到端验证完毕**：apply 3-server 全 Ready、exec/scp/hosts sync/hostname 守卫/kubeconfig、cert check/san（含 yaml 持久化）/rotate、delete 全链路（drain→delete node→etcd member 核验→卸载→yaml 更新，3→1 后 member list 确认为 1）、add 回补 1→3 全 Ready。此前在嵌套容器环境的验证因基础设施不稳定中断，换真 VM 后一次通过，并顺带修复 exec 参数引用与 cert rotate 二进制路径两个真机 bug。
 - 更新日期：2026-11-07
 - 前置：一期计划与实现状态见 `docs/DEVELOPMENT_PLAN.md`
 

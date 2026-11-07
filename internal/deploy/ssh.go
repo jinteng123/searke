@@ -278,9 +278,12 @@ func (c *Client) WriteFile(remote string, content []byte, mode os.FileMode) erro
 // Addr returns the connected host:port.
 func (c *Client) Addr() string { return c.addr }
 
-func shellQuote(s string) string {
+// ShellQuote wraps s in single quotes, escaping embedded quotes.
+func ShellQuote(s string) string {
 	return "'" + stringsReplaceAll(s) + "'"
 }
+
+func shellQuote(s string) string { return ShellQuote(s) }
 
 func stringsReplaceAll(s string) string {
 	out := make([]byte, 0, len(s)+8)
