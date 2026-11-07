@@ -13,8 +13,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG TARGETOS TARGETARCH
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w -buildid=" -o /out/searke ./cmd/searke
+    go build -trimpath -ldflags="-s -w -buildid= \
+      -X github.com/jint/searke/internal/cli.Version=${VERSION}" \
+    -o /out/searke ./cmd/searke
 # scratch has no mkdir, so prepare runtime dirs in the build stage:
 #   /tmp          — searke extracts .oci.tar payloads there
 #   /home/searke  — HOME for ~/.ssh/known_hosts and default key lookup

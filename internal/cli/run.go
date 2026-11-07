@@ -2,13 +2,16 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/jint/searke/internal/bundle"
+	"github.com/jint/searke/internal/cluster"
 	"github.com/jint/searke/internal/deploy"
 	"github.com/jint/searke/internal/ociimg"
+	"github.com/spf13/cobra"
 )
 
 func runBundleFetch(in, out string) error {
@@ -76,6 +79,37 @@ func runImageSave(src, out string, insecure bool) error {
 	return nil
 }
 
+func runImagePull(ref, outDir string, insecure bool) error {
+	fmt.Printf("pulling %s -> %s\n", ref, outDir)
+	if err := ociimg.PullToLayout(ref, outDir, insecure); err != nil {
+		return err
+	}
+	fmt.Println("done")
+	return nil
+}
+
+func runImageInspect(cmd *cobra.Command, src string, insecure bool) error {
+	s, err := ociimg.ParseSource(src, insecure)
+	if err != nil {
+		return err
+	}
+	ii, cleanup, err := s.OpenIndex()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	m, err := ociimg.IndexMeta(ii)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "version:   %s\ncni:       %s\nplatforms:\n", m.Version, m.CNI)
+	for _, p := range m.Platforms {
+		fmt.Fprintf(out, "  - %s  %s\n", p, m.Digests[p])
+	}
+	return nil
+}
+
 func runImageLoad(tarPath, outDir string) error {
 	if outDir == "" {
 		outDir = "oci-layout"
@@ -127,6 +161,54 @@ func runSingle(ctx context.Context, ro deploy.RunOptions, dryRun bool) error {
 
 func runStatus(file string) error {
 	return deploy.Status(deployOpts(file))
+}
+
+// loadCluster parses the descriptor for day-2 ops. Unlike deployOpts
+// flows it does not run Validate: bundle/endpoints are install-time
+// requirements, not needed to run commands on already-installed nodes.
+func loadCluster(file string) (*cluster.Cluster, error) {
+	return cluster.Load(file)
+}
+
+func runExec(file, nodesCSV, command string) error {
+	c, err := loadCluster(file)
+	if err != nil {
+		return err
+	}
+	return deploy.Exec(c, deploy.ParseNodeSelectors(nodesCSV), command, logf)
+}
+
+func runScp(file, nodesCSV, local, remote string, download bool) error {
+	c, err := loadCluster(file)
+	if err != nil {
+		return err
+	}
+	return deploy.Scp(c, deploy.ParseNodeSelectors(nodesCSV), local, remote, download, logf)
+}
+
+func runHostsSync(file, nodesCSV string) error {
+	c, err := loadCluster(file)
+	if err != nil {
+		return err
+	}
+	return deploy.HostsSync(c, deploy.ParseNodeSelectors(nodesCSV), logf)
+}
+
+func runHostname(file, nodesCSV, name string, force bool) error {
+	c, err := loadCluster(file)
+	if err != nil {
+		return err
+	}
+	return deploy.SetHostname(c, deploy.ParseNodeSelectors(nodesCSV), name, force, logf)
+}
+
+func runKubeconfig(file, outDir string) error {
+	c, err := loadCluster(file)
+	if err != nil {
+		return err
+	}
+	_, err = deploy.FetchKubeconfig(c, outDir, logf)
+	return err
 }
 
 func runUpgrade(ctx context.Context, file string, skipDrain, skipSnapshot bool) error {

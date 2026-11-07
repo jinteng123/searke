@@ -38,12 +38,7 @@ func Status(opts *Options) error {
 
 	// Live view: query the bootstrap server if one was recorded.
 	first := c.FirstServer()
-	sshCfg := SSHConfig{
-		User:         c.Spec.SSH.User,
-		Port:         c.Spec.SSH.Port,
-		IdentityFile: c.Spec.SSH.IdentityFile,
-		Sudo:         c.Spec.SSH.Sudo,
-	}
+	sshCfg := sshConfig(c)
 	cl, err := Connect(first.Address, sshCfg)
 	if err != nil {
 		logf(opts, "live status unavailable: %v", err)

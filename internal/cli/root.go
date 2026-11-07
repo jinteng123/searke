@@ -26,6 +26,7 @@ func NewRootCmd() *cobra.Command {
 	}
 	root.AddCommand(newBundleCmd(), newImageCmd())
 	root.AddCommand(newClusterCmds()...)
+	root.AddCommand(newVersionCmd(), newGenCmd())
 	return root
 }
 
@@ -111,7 +112,32 @@ func newImageCmd() *cobra.Command {
 	}
 	load.Flags().StringVarP(&loadOut, "output-dir", "o", "", "OCI layout output dir (default ./oci-layout)")
 
-	cmd.AddCommand(build, push, save, load)
+	var pullOut string
+	var pullInsecure bool
+	pull := &cobra.Command{
+		Use:   "pull <ref>",
+		Short: "Pull a registry index into a local OCI layout directory",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runImagePull(args[0], pullOut, pullInsecure)
+		},
+	}
+	pull.Flags().StringVarP(&pullOut, "output-dir", "o", "", "OCI layout output dir (required)")
+	pull.Flags().BoolVar(&pullInsecure, "insecure", false, "use plain HTTP for this registry")
+	pull.MarkFlagRequired("output-dir")
+
+	var inspectInsecure bool
+	inspect := &cobra.Command{
+		Use:   "inspect <ref|layout-dir|archive.oci.tar>",
+		Short: "Print the image index metadata (rke2 version, CNI, platforms, digests)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runImageInspect(cmd, args[0], inspectInsecure)
+		},
+	}
+	inspect.Flags().BoolVar(&inspectInsecure, "insecure", false, "use plain HTTP for this registry")
+
+	cmd.AddCommand(build, push, pull, save, load, inspect)
 	return cmd
 }
 
@@ -259,7 +285,85 @@ func newClusterCmds() []*cobra.Command {
 		flag(c)
 	}
 	snap := newSnapshotCmd(&file)
-	return []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd, run, snap, login, logout}
+	cmds := []*cobra.Command{validate, plan, apply, status, upgrade, uninstall, addCmd,
+		run, snap, login, logout}
+	return append(cmds, newOpsCmds(&file)...)
+}
+
+// newOpsCmds are the day-2 node operations sharing the cluster
+// descriptor and SSH plumbing: exec, scp, hosts, hostname, kubeconfig.
+func newOpsCmds(file *string) []*cobra.Command {
+	var nodesCSV string
+	nodeFlag := func(c *cobra.Command) {
+		c.Flags().StringVar(&nodesCSV, "nodes", "", "comma-separated node names/addresses (default: all)")
+	}
+
+	execCmd := &cobra.Command{
+		Use:   "exec -- <command>",
+		Short: "Run a shell command as root on the selected nodes",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runExec(*file, nodesCSV, strings.Join(args, " "))
+		},
+	}
+	nodeFlag(execCmd)
+
+	var scpDownload bool
+	scp := &cobra.Command{
+		Use:   "scp <local> <remote>",
+		Short: "Copy a file to every selected node (or --download to fetch into <local-dir>)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runScp(*file, nodesCSV, args[0], args[1], scpDownload)
+		},
+	}
+	nodeFlag(scp)
+	scp.Flags().BoolVar(&scpDownload, "download", false,
+		"fetch <remote> from each node into <local-dir>/<node>-<basename>")
+
+	var hostForce bool
+	hostname := &cobra.Command{
+		Use:   "hostname [name]",
+		Short: "Set node hostnames (default: the descriptor node name)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			return runHostname(*file, nodesCSV, name, hostForce)
+		},
+	}
+	nodeFlag(hostname)
+	hostname.Flags().BoolVar(&hostForce, "force", false,
+		"rename even when RKE2 is already installed (dangerous)")
+
+	hosts := &cobra.Command{Use: "hosts", Short: "Manage node /etc/hosts"}
+	hostsSync := &cobra.Command{
+		Use:   "sync",
+		Short: "Write a managed <address> <name> block to every node's /etc/hosts",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, args []string) error { return runHostsSync(*file, nodesCSV) },
+	}
+	nodeFlag(hostsSync)
+	hosts.AddCommand(hostsSync)
+
+	var kubeDir string
+	kubeconfig := &cobra.Command{
+		Use:   "kubeconfig",
+		Short: "Fetch the admin kubeconfig to <dir>/<cluster>-kubeconfig (mode 0600)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runKubeconfig(*file, kubeDir)
+		},
+	}
+	kubeconfig.Flags().StringVarP(&kubeDir, "output-dir", "o", ".", "destination directory")
+
+	cmds := []*cobra.Command{execCmd, scp, hosts, hostname, kubeconfig}
+	for _, c := range cmds {
+		c.Flags().StringVarP(file, "file", "f", "cluster.yaml", "cluster descriptor")
+	}
+	return cmds
 }
 
 func newSnapshotCmd(file *string) *cobra.Command {

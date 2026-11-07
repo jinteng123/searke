@@ -115,12 +115,7 @@ func stateDir(opts *Options) string {
 
 // connectAll reaches every node (SSH or local exec) and runs preflight.
 func connectAll(c *cluster.Cluster, opts *Options) ([]*nodeRuntime, error) {
-	sshCfg := SSHConfig{
-		User:         c.Spec.SSH.User,
-		Port:         c.Spec.SSH.Port,
-		IdentityFile: c.Spec.SSH.IdentityFile,
-		Sudo:         c.Spec.SSH.Sudo,
-	}
+	sshCfg := sshConfig(c)
 	hostnames := map[string]string{}
 	var runtimes []*nodeRuntime
 	for _, n := range c.AllNodes() {

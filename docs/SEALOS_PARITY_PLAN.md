@@ -1,6 +1,6 @@
 # Searke 开发计划（二期）：对齐 Sealos 常用命令
 
-- 文档状态：提案，未开始实现
+- 文档状态：批次 0-2 已实现（exec/scp 本机实跑，多节点真机待验）；批次 3-5 未开始
 - 更新日期：2026-11-07
 - 前置：一期计划与实现状态见 `docs/DEVELOPMENT_PLAN.md`
 
@@ -171,14 +171,22 @@ searke image serve dist/rke2-oci --listen :5000 [--tls-cert ... --tls-key ...]
 
 依赖关系：P2 的共用设施（节点选择、SSH helper、fakeExecutor）也会被 delete 用到，所以先做这部分。
 
-| 批次 | 内容 | 验证 |
-| --- | --- | --- |
-| 0 | 共用设施：`selectNodes`、SSH helper 收敛、fakeExecutor 共享、ldflags 版本注入 | 单测 |
-| 1 | `version` / `gen` / `completion` 文档、`image pull` / `inspect` | 单测 + 本地 registry / ACR 拉取 |
-| 2 | `exec` / `scp` / `hosts sync` / `hostname` / `kubeconfig` | vm-test 三节点真机 |
-| 3 | **`delete`**（含 `RemoveFromDescriptor` / `State.RemoveNode`） | 真机：删 agent→加回；改成 3 server 后删 2 台 |
-| 4 | `cert check/san/rotate` | 真机：新 SAN 能通过 TLS，rotate 后 NotAfter 刷新 |
-| 5 | `image serve` | `searke run <serve地址>/rke2:tag --insecure` 端到端 |
+| 批次 | 内容 | 验证 | 状态 |
+| --- | --- | --- | --- |
+| 0 | 共用设施：`selectNodes`、`forEachNode` 聚合错误、SSH helper 收敛为 `sshConfig()`、ldflags 版本注入 | 单测 | ✅ 已实现 |
+| 1 | `version` / `gen` / `image pull` / `image inspect`（`completion` 为 cobra 自带） | `inspect`/`gen`/`version` 本地实跑 | ✅ 已实现 |
+| 2 | `exec` / `scp` / `hosts sync` / `hostname` / `kubeconfig` | exec/scp 本机（local executor）实跑；其余逻辑单测；**多节点真机待验** | ✅ 已实现，真机待验 |
+| 3 | **`delete`**（含 `RemoveFromDescriptor` / `State.RemoveNode`） | 真机：删 agent→加回；改成 3 server 后删 2 台 | ⬜ 未开始 |
+| 4 | `cert check/san/rotate` | 真机：新 SAN 能通过 TLS，rotate 后 NotAfter 刷新 | ⬜ 未开始 |
+| 5 | `image serve` | `searke run <serve地址>/rke2:tag --insecure` 端到端 | ⬜ 未开始 |
+
+已落地实现要点：
+
+- `selectNodes`/`ParseNodeSelectors`/`forEachNode` 在 `internal/deploy/ops.go`；节点按 name 或 address 选中，`--nodes` 缺省为全部；单节点失败不中断，最后聚合报错。
+- ops 命令用 `cluster.Load`（schema 校验）而非完整安装校验；`searke run` 生成的描述同样可用。
+- `hosts sync` 用 `# searke-hosts-begin/end` 管理块幂等替换；检测到 `/etc/cloud` 下 `manage_etc_hosts` 时给出 cloud-init 覆盖警告。
+- `hostname`：存在 `/var/lib/rancher/rke2` 时默认拒绝，`--force` 放行。
+- `kubeconfig`：从 FirstServer 拉 `rke2.yaml`，`https://127.0.0.1:6443` 改写为 server 地址，写 `<cluster>-kubeconfig` 0600，不进 stdout。
 
 每个批次单独提交：`go test ./...`、`go vet`、`gofmt` 全部通过，README 和本文档的状态表同步更新。
 

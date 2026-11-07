@@ -31,12 +31,7 @@ func Uninstall(ctx context.Context, opts *Options, confirm, ignoreUnreachable bo
 	if err != nil {
 		return err
 	}
-	sshCfg := SSHConfig{
-		User:         c.Spec.SSH.User,
-		Port:         c.Spec.SSH.Port,
-		IdentityFile: c.Spec.SSH.IdentityFile,
-		Sudo:         c.Spec.SSH.Sudo,
-	}
+	sshCfg := sshConfig(c)
 
 	var ordered []cluster.Node
 	ordered = append(ordered, c.Spec.Agents...)

@@ -16,12 +16,7 @@ const snapshotDir = "/var/lib/rancher/rke2/server/db/snapshots"
 // connectFirst opens a connection to the bootstrap server.
 func connectFirst(c *cluster.Cluster) (Executor, error) {
 	first := c.FirstServer()
-	return Connect(first.Address, SSHConfig{
-		User:         c.Spec.SSH.User,
-		Port:         c.Spec.SSH.Port,
-		IdentityFile: c.Spec.SSH.IdentityFile,
-		Sudo:         c.Spec.SSH.Sudo,
-	})
+	return Connect(first.Address, sshConfig(c))
 }
 
 // SnapshotSave creates an etcd snapshot on the bootstrap server.
@@ -114,12 +109,7 @@ func SnapshotRestore(opts *Options, name string, confirm bool) error {
 	if err != nil {
 		return err
 	}
-	sshCfg := SSHConfig{
-		User:         c.Spec.SSH.User,
-		Port:         c.Spec.SSH.Port,
-		IdentityFile: c.Spec.SSH.IdentityFile,
-		Sudo:         c.Spec.SSH.Sudo,
-	}
+	sshCfg := sshConfig(c)
 
 	clients := map[string]Executor{}
 	defer func() {
