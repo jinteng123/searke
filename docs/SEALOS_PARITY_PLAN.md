@@ -175,9 +175,9 @@ searke image serve dist/rke2-oci --listen :5000 [--tls-cert ... --tls-key ...]
 | --- | --- | --- | --- |
 | 0 | 共用设施：`selectNodes`、`forEachNode` 聚合错误、SSH helper 收敛为 `sshConfig()`、ldflags 版本注入 | 单测 | ✅ 已实现 |
 | 1 | `version` / `gen` / `image pull` / `image inspect`（`completion` 为 cobra 自带） | `inspect`/`gen`/`version` 本地实跑 | ✅ 已实现 |
-| 2 | `exec` / `scp` / `hosts sync` / `hostname` / `kubeconfig` | **exec/hosts sync 3 节点真机已验**；scp/hostname/kubeconfig 逻辑单测 | ✅ 已实现，部分真机验证 |
-| 3 | **`delete`**（`RemoveFromDescriptor` / `State.RemoveNode` / drain 超时 / etcd member 核验 / 方案A 奇数护栏 / 首server+registration 保护） | 守卫单测全过；**真机已验**：奇数拒绝、drain 超时中止且不改 yaml、`-f` flag 修复、etcd member list 用 server-client.* 证书经 crictl 直连可达；**待验**：delete node→member 移除→卸载 全链路 | ✅ 已实现，部分真机验证 |
-| 4 | `cert check/san/rotate` | **真机已验**：cert check 三节点证书解析+SAN 展示；cert san 远端 config 写入→重启→证书出现新 SAN（重启等待放宽至 10m 后已可完成）；**待验**：san 全量跑通后 cluster.yaml 持久化、rotate | ✅ 已实现，部分真机验证 |
+| 2 | `exec` / `scp` / `hosts sync` / `hostname` / `kubeconfig` | **3-server 真机全验**：exec 前缀输出+错误聚合+参数引号；scp 上下行+权限位保留；hosts 管理块幂等+cloud-init 检测修正；hostname 单节点守卫+RKE2 拒绝；kubeconfig 本地 kubectl 直连 | ✅ 已实现，真机已验 |
+| 3 | **`delete`**（`RemoveFromDescriptor` / `State.RemoveNode` / drain 超时 / etcd member 核验 / 方案A 奇数护栏 / 首server+registration 保护） | 守卫单测全过；**3-server 真机全链路已验**：drain→delete node→etcd member 核验（crictl 直连，peer URL 精确匹配）→卸载→yaml+state 原子更新；**断点续跑已验**（预先删过 node 的节点跳过 drain 直接核验+卸载） | ✅ 已实现，真机已验 |
+| 4 | `cert check/san/rotate` | **3-server 真机全链路已验**：check 证书解析+SAN；san 合并→滚动重启（active+readyz 双等待）→证书核验→yaml 持久化；rotate 上游 stop→rotate→start 顺序，serial 前后对比确认真实轮换 | ✅ 已实现，真机已验 |
 | 5 | `image serve` | `image pull --insecure` 端到端拉回 digest 一致 | ✅ 已实现并端到端验证 |
 
 已落地实现要点：
