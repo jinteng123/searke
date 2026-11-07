@@ -1,6 +1,6 @@
 # Searke 开发计划（二期）：对齐 Sealos 常用命令
 
-- 文档状态：批次 0-5 全部已实现；image serve 已端到端验证；delete/cert/多节点 ops 真机验证待做
+- 文档状态：批次 0-5 全部已实现；image serve 已端到端验证；真机验证（3-server 嵌套容器环境）完成大部分：exec/hosts sync/cert check/cert-san-证书生效/delete 守卫与 drain 中止路径已验；delete 全链路（node 删除→etcd member 移除→卸载→yaml 更新）与 cert rotate 因嵌套环境 API 不稳定未完整跑通，待真实主机环境补验
 - 更新日期：2026-11-07
 - 前置：一期计划与实现状态见 `docs/DEVELOPMENT_PLAN.md`
 
@@ -175,9 +175,9 @@ searke image serve dist/rke2-oci --listen :5000 [--tls-cert ... --tls-key ...]
 | --- | --- | --- | --- |
 | 0 | 共用设施：`selectNodes`、`forEachNode` 聚合错误、SSH helper 收敛为 `sshConfig()`、ldflags 版本注入 | 单测 | ✅ 已实现 |
 | 1 | `version` / `gen` / `image pull` / `image inspect`（`completion` 为 cobra 自带） | `inspect`/`gen`/`version` 本地实跑 | ✅ 已实现 |
-| 2 | `exec` / `scp` / `hosts sync` / `hostname` / `kubeconfig` | exec/scp 本机（local executor）实跑；其余逻辑单测；**多节点真机待验** | ✅ 已实现，真机待验 |
-| 3 | **`delete`**（`RemoveFromDescriptor` / `State.RemoveNode` / drain 超时 / etcd member 核验 / 方案A 奇数护栏 / 首server+registration 保护） | 守卫逻辑单测全过；**3-server 真机待验** | ✅ 已实现，真机待验 |
-| 4 | `cert check/san/rotate` | SAN 合并/远端改写真机逻辑单测；**重启与证书生效真机待验** | ✅ 已实现，真机待验 |
+| 2 | `exec` / `scp` / `hosts sync` / `hostname` / `kubeconfig` | **exec/hosts sync 3 节点真机已验**；scp/hostname/kubeconfig 逻辑单测 | ✅ 已实现，部分真机验证 |
+| 3 | **`delete`**（`RemoveFromDescriptor` / `State.RemoveNode` / drain 超时 / etcd member 核验 / 方案A 奇数护栏 / 首server+registration 保护） | 守卫单测全过；**真机已验**：奇数拒绝、drain 超时中止且不改 yaml、`-f` flag 修复、etcd member list 用 server-client.* 证书经 crictl 直连可达；**待验**：delete node→member 移除→卸载 全链路 | ✅ 已实现，部分真机验证 |
+| 4 | `cert check/san/rotate` | **真机已验**：cert check 三节点证书解析+SAN 展示；cert san 远端 config 写入→重启→证书出现新 SAN（重启等待放宽至 10m 后已可完成）；**待验**：san 全量跑通后 cluster.yaml 持久化、rotate | ✅ 已实现，部分真机验证 |
 | 5 | `image serve` | `image pull --insecure` 端到端拉回 digest 一致 | ✅ 已实现并端到端验证 |
 
 已落地实现要点：
