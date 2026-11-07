@@ -84,6 +84,10 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke hostname [name] [--force]` | ✅ 已实现（多节点真机待验） | `hostnamectl` 改名（缺省用描述里的节点名）；已装 RKE2 的节点默认拒绝 |
 | `searke kubeconfig -f cluster.yaml -o <dir>` | ✅ 已实现（真机待验） | 从首 server 拉 `rke2.yaml`，server 地址改写为可达地址，写 `<cluster>-kubeconfig` 0600；不打印到 stdout |
 | `searke delete --servers/--agents <name>...` | ✅ 已实现（**3-server 真机待验**） | 节点缩容：drain（`--drain-timeout`，超时即中止不改 yaml）→ `kubectl delete node` → server 额外核验 etcd member 移除（pod 内 etcdctl，轮询至消失）→ 节点本机跑上游卸载脚本 → **最后**才原子改写 cluster.yaml 与 state。护栏：server 必须保持奇数（方案A）、首 server 与 registration 地址不可删、需 `--yes`、`--dry-run` 出计划、 `--skip-drain` 可跳过驱逐 |
+| `searke cert check` | ✅ 已实现（真机待验） | 拉取各 server apiserver 服务证书本地解析：到期时间 + SAN 列表，<30 天告警；不需要节点上 openssl |
+| `searke cert san <ip/domain>... --yes` | ✅ 已实现（真机待验） | 每台 server：读远端 config.yaml 合并 tls-san → 逐台 `systemctl restart rke2-server` → 重拉证书核验新 SAN 生效 → 全部成功才把 tls-san 写回 spec.rke2Config（升级/重写配置不丢） |
+| `searke cert rotate --yes` | ✅ 已实现（真机待验） | 逐台跑 `rke2 certificate rotate` + 重启 + 等 active + 报新到期日 |
+| `searke image serve <dir> --address :port` | ✅ 已实现并端到端验证 | 本地 OCI layout 目录暴露为只读 HTTP registry（无认证，请绑可信网卡）；已验证 `image pull --insecure` 完整拉回且 digest 一致 |
 
 ## 快速流程
 

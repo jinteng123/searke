@@ -1,6 +1,6 @@
 # Searke 开发计划（二期）：对齐 Sealos 常用命令
 
-- 文档状态：批次 0-2 已实现（exec/scp 本机实跑，多节点真机待验）；批次 3-5 未开始
+- 文档状态：批次 0-5 全部已实现；image serve 已端到端验证；delete/cert/多节点 ops 真机验证待做
 - 更新日期：2026-11-07
 - 前置：一期计划与实现状态见 `docs/DEVELOPMENT_PLAN.md`
 
@@ -177,8 +177,8 @@ searke image serve dist/rke2-oci --listen :5000 [--tls-cert ... --tls-key ...]
 | 1 | `version` / `gen` / `image pull` / `image inspect`（`completion` 为 cobra 自带） | `inspect`/`gen`/`version` 本地实跑 | ✅ 已实现 |
 | 2 | `exec` / `scp` / `hosts sync` / `hostname` / `kubeconfig` | exec/scp 本机（local executor）实跑；其余逻辑单测；**多节点真机待验** | ✅ 已实现，真机待验 |
 | 3 | **`delete`**（`RemoveFromDescriptor` / `State.RemoveNode` / drain 超时 / etcd member 核验 / 方案A 奇数护栏 / 首server+registration 保护） | 守卫逻辑单测全过；**3-server 真机待验** | ✅ 已实现，真机待验 |
-| 4 | `cert check/san/rotate` | 真机：新 SAN 能通过 TLS，rotate 后 NotAfter 刷新 | ⬜ 未开始 |
-| 5 | `image serve` | `searke run <serve地址>/rke2:tag --insecure` 端到端 | ⬜ 未开始 |
+| 4 | `cert check/san/rotate` | SAN 合并/远端改写真机逻辑单测；**重启与证书生效真机待验** | ✅ 已实现，真机待验 |
+| 5 | `image serve` | `image pull --insecure` 端到端拉回 digest 一致 | ✅ 已实现并端到端验证 |
 
 已落地实现要点：
 

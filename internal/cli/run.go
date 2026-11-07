@@ -269,3 +269,27 @@ func runLogout(registry string) error {
 func runDelete(ctx context.Context, file string, del deploy.DeleteOptions) error {
 	return deploy.Delete(ctx, deployOpts(file), del)
 }
+
+func runCertCheck(file, nodesCSV string) error {
+	c, err := loadCluster(file)
+	if err != nil {
+		return err
+	}
+	return deploy.CertCheck(c, deploy.ParseNodeSelectors(nodesCSV), logf)
+}
+
+func runCertSan(file, nodesCSV string, sans []string, yes bool) error {
+	c, err := loadCluster(file)
+	if err != nil {
+		return err
+	}
+	return deploy.CertSan(c, deploy.ParseNodeSelectors(nodesCSV), sans, deployOpts(file), yes)
+}
+
+func runCertRotate(file, nodesCSV string, yes bool) error {
+	c, err := loadCluster(file)
+	if err != nil {
+		return err
+	}
+	return deploy.CertRotate(c, deploy.ParseNodeSelectors(nodesCSV), deployOpts(file), yes)
+}

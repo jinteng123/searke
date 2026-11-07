@@ -154,6 +154,62 @@ func RemoveFromDescriptor(path string, names []string) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// SetRKE2ConfigList writes a string list under spec.rke2Config[key],
+// creating the mapping when absent. Atomic temp+rename write.
+func SetRKE2ConfigList(path, key string, values []string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: expected a mapping document", path)
+	}
+	spec := mapValue(doc.Content[0], "spec")
+	if spec == nil || spec.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: no spec section found", path)
+	}
+	cfg := mapValue(spec, "rke2Config")
+	if cfg == nil || cfg.Kind != yaml.MappingNode {
+		cfg = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		setMapValue(spec, "rke2Config", cfg)
+	}
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, v := range values {
+		seq.Content = append(seq.Content, strNode(v))
+	}
+	setMapValue(cfg, key, seq)
+
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cluster-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
 func mapValue(m *yaml.Node, key string) *yaml.Node {
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value == key {

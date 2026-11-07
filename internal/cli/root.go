@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/jint/searke/internal/deploy"
+	"github.com/jint/searke/internal/ociimg"
 )
 
 func logf(format string, args ...any) {
@@ -138,7 +139,18 @@ func newImageCmd() *cobra.Command {
 	}
 	inspect.Flags().BoolVar(&inspectInsecure, "insecure", false, "use plain HTTP for this registry")
 
-	cmd.AddCommand(build, push, pull, save, load, inspect)
+	var serveAddr string
+	serve := &cobra.Command{
+		Use:   "serve <layout-dir>",
+		Short: "Expose a local OCI layout dir as a read-only HTTP registry (foreground)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ociimg.ServeRegistry(args[0], serveAddr, logf)
+		},
+	}
+	serve.Flags().StringVar(&serveAddr, "address", "127.0.0.1:15000", "listen address (bind trusted interfaces only: no auth)")
+
+	cmd.AddCommand(build, push, pull, save, load, inspect, serve)
 	return cmd
 }
 
@@ -385,11 +397,51 @@ func newOpsCmds(file *string) []*cobra.Command {
 	}
 	kubeconfig.Flags().StringVarP(&kubeDir, "output-dir", "o", ".", "destination directory")
 
-	cmds := []*cobra.Command{execCmd, scp, hosts, hostname, kubeconfig}
+	cmds := []*cobra.Command{execCmd, scp, hosts, hostname, kubeconfig, newCertCmds(file, &nodesCSV)}
 	for _, c := range cmds {
-		c.Flags().StringVarP(file, "file", "f", "cluster.yaml", "cluster descriptor")
+		// Persistent so flag applies on leaf subcommands (hosts sync,
+		// cert check...) as well as on the command itself.
+		c.PersistentFlags().StringVarP(file, "file", "f", "cluster.yaml", "cluster descriptor")
 	}
 	return cmds
+}
+
+// newCertCmds groups the apiserver certificate operations.
+func newCertCmds(file, nodesCSV *string) *cobra.Command {
+	cert := &cobra.Command{Use: "cert", Short: "RKE2 apiserver certificate operations"}
+
+	check := &cobra.Command{
+		Use:   "check",
+		Short: "Show serving-cert expiry and SANs on each server (read-only)",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, _ []string) error { return runCertCheck(*file, *nodesCSV) },
+	}
+	check.Flags().StringVar(nodesCSV, "nodes", "", "comma-separated server names/addresses")
+
+	var sanYes bool
+	san := &cobra.Command{
+		Use:   "san <ip-or-domain>...",
+		Short: "Add SANs to the apiserver cert on every selected server (rolling restart)",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCertSan(*file, *nodesCSV, args, sanYes)
+		},
+	}
+	san.Flags().StringVar(nodesCSV, "nodes", "", "comma-separated server names/addresses")
+	san.Flags().BoolVar(&sanYes, "yes", false, "confirm the rolling rke2-server restarts")
+
+	var rotYes bool
+	rotate := &cobra.Command{
+		Use:   "rotate",
+		Short: "Rotate RKE2 certificates on every selected server (rolling restart)",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, _ []string) error { return runCertRotate(*file, *nodesCSV, rotYes) },
+	}
+	rotate.Flags().StringVar(nodesCSV, "nodes", "", "comma-separated server names/addresses")
+	rotate.Flags().BoolVar(&rotYes, "yes", false, "confirm the rolling rke2-server restarts")
+
+	cert.AddCommand(check, san, rotate)
+	return cert
 }
 
 func newSnapshotCmd(file *string) *cobra.Command {
