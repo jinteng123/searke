@@ -621,7 +621,9 @@ func waitReady(ctx context.Context, first *nodeRuntime, names map[string]string,
 		for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
 			f := strings.Fields(line)
 			if len(f) >= 2 {
-				ready[f[0]] = f[1] == "Ready"
+				// "Ready" or "Ready,SchedulingDisabled" (cordoned
+				// nodes stay schedulable=false until uncordoned).
+				ready[f[0]] = f[1] == "Ready" || strings.HasPrefix(f[1], "Ready,")
 			}
 		}
 		for _, nodeName := range names {

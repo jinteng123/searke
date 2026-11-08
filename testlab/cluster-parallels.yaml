@@ -4,7 +4,7 @@ metadata:
   name: rke2-parallels
 spec:
   rke2:
-    bundle: /Users/jint/code/searke/dist/rke2-v1.36.5-rke2r1-multiarch.oci.tar
+    bundle: /Users/jint/code/searke/dist/rke2-v1.36.6-arm64.oci.tar
     cni: canal
   ssh:
     user: searke

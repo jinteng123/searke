@@ -73,20 +73,28 @@ func TestRenderConfigMerges(t *testing.T) {
 	}
 }
 
-func TestMinorSkew(t *testing.T) {
-	d, err := minorSkew("v1.36.5+rke2r1", "v1.37.1+rke2r1")
-	if err != nil || d != 1 {
-		t.Fatalf("got %d %v", d, err)
+func TestCheckUpgradePath(t *testing.T) {
+	ok := [][2]string{
+		{"v1.36.5+rke2r1", "v1.36.6+rke2r1"}, // patch bump
+		{"v1.36.5+rke2r1", "v1.36.5+rke2r2"}, // revision bump
+		{"v1.36.5+rke2r1", "v1.37.0+rke2r1"}, // one minor
+		{"v1.36.5+rke2r1", "v1.37.1+rke2r1"},
 	}
-	if _, err := minorSkew("v1.36.5+rke2r1", "v1.38.0+rke2r1"); err != nil || true {
-		// >1 allowed by minorSkew (caller decides); check it reports 2
+	for _, tt := range ok {
+		if err := checkUpgradePath(tt[0], tt[1]); err != nil {
+			t.Errorf("%s -> %s: %v", tt[0], tt[1], err)
+		}
 	}
-	d, _ = minorSkew("v1.36.5+rke2r1", "v1.38.0+rke2r1")
-	if d != 2 {
-		t.Fatalf("skew = %d, want 2", d)
+	bad := [][2]string{
+		{"v1.36.6+rke2r1", "v1.36.5+rke2r1"}, // patch downgrade
+		{"v1.37.0+rke2r1", "v1.36.9+rke2r1"}, // minor downgrade
+		{"v1.36.5+rke2r1", "v1.38.0+rke2r1"}, // skips a minor
+		{"v1.36.5+rke2r1", "v2.0.0+rke2r1"},  // major bump
 	}
-	if _, err := minorSkew("v1.36.5+rke2r1", "v2.0.0+rke2r1"); err == nil {
-		t.Fatal("major bump must fail")
+	for _, tt := range bad {
+		if err := checkUpgradePath(tt[0], tt[1]); err == nil {
+			t.Errorf("%s -> %s: expected error", tt[0], tt[1])
+		}
 	}
 }
 

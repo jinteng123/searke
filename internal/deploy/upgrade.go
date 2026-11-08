@@ -12,22 +12,36 @@ import (
 	"github.com/jint/searke/internal/cluster"
 )
 
-var versionNumRe = regexp.MustCompile(`^v(\d+)\.(\d+)\.`)
+var versionNumRe = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)`)
 
-// minorSkew returns the minor-version distance between two pinned
-// versions, or an error if either is unparseable.
-func minorSkew(from, to string) (int, error) {
+// checkUpgradePath validates an RKE2 version transition: same major,
+// at most one minor ahead, never a downgrade. Patch and +rke2rN
+// revision bumps within a minor are upgrades too.
+func checkUpgradePath(from, to string) error {
 	fm := versionNumRe.FindStringSubmatch(from)
 	tm := versionNumRe.FindStringSubmatch(to)
 	if fm == nil || tm == nil {
-		return 0, fmt.Errorf("cannot compare versions %q -> %q", from, to)
+		return fmt.Errorf("cannot compare versions %q -> %q", from, to)
 	}
 	if fm[1] != tm[1] {
-		return 0, fmt.Errorf("major version change %s -> %s is not supported", from, to)
+		return fmt.Errorf("major version change %s -> %s is not supported", from, to)
 	}
 	fMin, _ := strconv.Atoi(fm[2])
+	fPatch, _ := strconv.Atoi(fm[3])
 	tMin, _ := strconv.Atoi(tm[2])
-	return tMin - fMin, nil
+	tPatch, _ := strconv.Atoi(tm[3])
+	switch {
+	case tMin < fMin, tMin == fMin && tPatch < fPatch:
+		return fmt.Errorf("downgrades are not supported (%s -> %s)", from, to)
+	case tMin == fMin && tPatch == fPatch:
+		// Same k8s version — only an +rke2rN revision bump reaches
+		// here (equal strings were rejected earlier).
+		return nil
+	case tMin-fMin > 1:
+		return fmt.Errorf("upgrade %s -> %s skips %d minor versions; RKE2 supports one at a time",
+			from, to, tMin-fMin)
+	}
+	return nil
 }
 
 // UpgradeOptions controls an upgrade run.
@@ -57,16 +71,8 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 	if st.Version == target {
 		return fmt.Errorf("cluster is already at %s; nothing to do (use apply to converge)", target)
 	}
-	skew, err := minorSkew(st.Version, target)
-	if err != nil {
+	if err := checkUpgradePath(st.Version, target); err != nil {
 		return err
-	}
-	if skew <= 0 {
-		return fmt.Errorf("downgrades are not supported (%s -> %s)", st.Version, target)
-	}
-	if skew > 1 {
-		return fmt.Errorf("upgrade %s -> %s skips %d minor versions; RKE2 supports one at a time",
-			st.Version, target, skew)
 	}
 	logf(opts, "upgrading cluster %s: %s -> %s", c.Name(), st.Version, target)
 
@@ -125,6 +131,13 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 	for _, r := range order {
 		if r.report.InstalledVersion == target {
 			logf(opts, "  %s: already %s, skipping", r.node.Name, target)
+			// Heal cordon state left by an interrupted earlier run;
+			// uncordon on a schedulable node is a no-op.
+			if !uo.SkipDrain && !singleNode {
+				if err := drainNode(first, r, false, opts); err != nil {
+					logf(opts, "  warning %s: uncordon failed: %v", r.node.Name, err)
+				}
+			}
 			continue
 		}
 		if r.report.Service == "" {
@@ -144,10 +157,10 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 				return fmt.Errorf("%s: node did not return Ready: %w", r.node.Name, err)
 			}
 		} else {
-			if err := waitFor(ctx, 120*time.Second, func() (bool, error) {
-				res, _ := r.client.RunSudo("systemctl is-active rke2-server")
-				return res != nil && res.ExitCode == 0, nil
-			}); err != nil {
+			// The bootstrap server must actually serve before the
+			// next node's drain/kubectl calls — service active alone
+			// races ahead of the apiserver.
+			if err := waitServerReady(r.client, 10*time.Minute); err != nil {
 				return fmt.Errorf("%s: rke2-server did not come back: %w", r.node.Name, err)
 			}
 		}

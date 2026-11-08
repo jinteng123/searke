@@ -211,7 +211,7 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 
 - `image push`/`login` 已在本机 `registry:2`（HTTP + htpasswd）和阿里云 ACR 真实验证：`searke/rke2:v1.36.5-rke2r1`（gzip 层双架构 index + `-amd64`/`-arm64` 单架构 tag）、`searke/searke:latest`/`v0.1.0`（工具镜像）。注意 ACR 拒绝 zstd 层（`BLOB_TYPE_INVALID`），推送前需 `image build --compression gzip`
 - cluster.yaml `spec.rke2.insecure: true` 可让 `bundle: <registry-ref>` 走 HTTP；`searke run` 对应 `--insecure` |
-- 已真实验证（Parallels Ubuntu 24.04 **arm64** 独立 VM ×3，真实 SSH，RKE2 v1.36.5+rke2r1）：**3-server HA 拓扑完整生命周期**——`apply` 三控制面全 Ready、`exec`/`scp` 上下行、`hosts sync`、`kubeconfig` 本地直连、`cert check/san/rotate` 全链路、`delete` 缩容（3→1：drain→delete node→etcd member 核验→卸载→yaml 更新，member list 确认为 1）、`add` 回补（1→3 全 Ready）、`status` 实时视图。另在早期 2 节点环境验过 `searke run` 单节点、`uninstall` 重装闭环、`snapshot save/list/pull`、幂等重跑
-- 未真实验证：`upgrade`、HA `snapshot restore`
+- 已真实验证（Parallels Ubuntu 24.04 **arm64** 独立 VM ×3，真实 SSH）：**3-server HA 拓扑完整生命周期**——`apply` 三控制面全 Ready、`exec`/`scp` 上下行、`hosts sync`、`kubeconfig` 本地直连、`cert check/san/rotate` 全链路、`delete` 缩容（3→1：drain→delete node→etcd member 核验→卸载→yaml 更新，member list 确认为 1）、`add` 回补（1→3 全 Ready）、`status` 实时视图、`upgrade` 滚动升级（v1.36.5→v1.36.6：前置 etcd 快照、逐台 drain→重传制品→install.sh→就绪等待→uncordon、etcd quorum 全程保持、中断重跑自愈 cordon、升完重跑幂等退出）。另在早期 2 节点环境验过 `searke run` 单节点、`uninstall` 重装闭环、`snapshot save/list/pull`、幂等重跑
+- 未真实验证：HA `snapshot restore`
 - 节点 OS：RKE2 tar 安装与发行版无关，preflight 仅警告非 Ubuntu 发行版（Ubuntu 22.04 为已验证基线）。硬性限制：SELinux 必须为 Permissive/Disabled（tar 安装不含 rke2-selinux 策略）；firewalld active / NetworkManager 未豁免 `cali*`/`flannel*` / 缺 iptables 各给一条警告
 - 节点增删、CNI profile 扩展未做（计划明确缓议）

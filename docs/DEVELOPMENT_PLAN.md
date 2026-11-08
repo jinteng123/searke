@@ -12,9 +12,9 @@
 | --- | --- | --- |
 | 阶段 0：schema + OCI 原型 | ✅ 完成 | `bundle.yaml`/`cluster.yaml` 解析与校验；多架构 OCI Index 构建、按平台提取均经单元测试与真实制品验证 |
 | 阶段 1：`bundle fetch`/`verify` | ✅ 完成 | `v1.36.5+rke2r1` amd64+arm64 全量下载、上游 SHA256 校验、`bundle.lock.yaml` 生成真实通过；超时/重试/断点续传/原子落盘已实现 |
-| 阶段 2：`image build/push/save/load` | ✅ 完成 | build/save/load 已真实验证（1.5GB 双架构归档）；push 代码就绪待 registry 验证 |
+| 阶段 2：`image build/push/save/load` | ✅ 完成 | build/save/load 真实验证（1.5GB 双架构归档）；push 已在阿里云 ACR（`registry.cn-hangzhou.aliyuncs.com`）真实推送验证 |
 | 阶段 3：`validate/plan/apply` | ✅ 完成 | Parallels Ubuntu 22.04 arm64 VM 实测：SSH apply 单节点 + agent join 组成 2 节点集群、幂等重跑、本机节点本地执行安装全部通过；preflight 拦获并处理了缺省路由、主机名重复、known_hosts 算法不匹配等实机问题 |
-| 阶段 4：`status`+生命周期 | ✅ 部分验证 | `status`（状态+live kubectl）与 `snapshot save/list/pull` 实机通过；`snapshot restore` HA 流程、`upgrade` 滚动升级、3-server HA 拓扑、`image push` 实机待验证 |
+| 阶段 4：`status`+生命周期 | ✅ 基本验证 | `status`（状态+live kubectl）、`snapshot save/list/pull`、3-server HA 拓扑、`add`/`delete` 全链路、`upgrade` 滚动升级（v1.36.5→v1.36.6：前置 etcd 快照、逐台 drain→换包→就绪等待→uncordon、etcd quorum 全程保持、幂等重跑/断点续跑）均已在 Parallels 3-server 真机验证；仅剩 `snapshot restore` HA 恢复流程未实机验证 |
 
 **二期计划：** 对齐 Sealos 常用命令（`delete` 缩容、`exec`/`scp`、`cert`、`kubeconfig` 等）见 `docs/SEALOS_PARITY_PLAN.md`。
 
