@@ -248,7 +248,7 @@ func CertRotate(c *cluster.Cluster, names []string, opts *Options, yes bool) err
 		logf(opts, "[%s] rke2 certificate rotate", n.Name)
 		before, _ := servingCert(ex)
 		_, err = runAsRoot(ex, "systemctl stop rke2-server && "+
-			"/usr/local/bin/rke2 certificate rotate && systemctl start rke2-server")
+			rke2Exe+" certificate rotate && systemctl start rke2-server")
 		if err == nil {
 			err = waitServerReady(ex, 10*time.Minute)
 		}

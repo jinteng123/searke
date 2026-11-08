@@ -31,6 +31,10 @@ const (
 	kubectlPath     = "/var/lib/rancher/rke2/bin/kubectl"
 	kubeconfigPath  = "/etc/rancher/rke2/rke2.yaml"
 	rke2BinDir      = "/var/lib/rancher/rke2/bin"
+	// rke2Exe invokes the rke2 binary wherever install.sh put it:
+	// sudo's secure_path on RHEL-family omits /usr/local/bin, and
+	// install.sh falls back to /opt/rke2/bin on read-only /usr/local.
+	rke2Exe = "PATH=/usr/local/bin:/opt/rke2/bin:$PATH rke2"
 )
 
 // Options controls Validate/Plan/Apply runs.
@@ -241,6 +245,11 @@ func Apply(ctx context.Context, opts *Options) error {
 	if err != nil {
 		return err
 	}
+	if prev := st.FirstServer; prev != "" && prev != c.FirstServer().Name && hasServer(c, prev) {
+		return fmt.Errorf("bootstrap server changed from %s to %s (it is the name-sorted first server); "+
+			"rename %s so it sorts after %s, otherwise it would initialise a separate cluster",
+			prev, c.FirstServer().Name, c.FirstServer().Name, prev)
+	}
 	st.FirstServer = c.FirstServer().Name
 
 	logf(opts, "== phase 1: preflight ==")
@@ -343,6 +352,15 @@ func Apply(ctx context.Context, opts *Options) error {
 			c.Spec.SSH.User, first.node.Address, kubeconfigPath)
 	}
 	return nil
+}
+
+func hasServer(c *cluster.Cluster, name string) bool {
+	for _, n := range c.Spec.Servers {
+		if n.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func findRuntime(rts []*nodeRuntime, name string) *nodeRuntime {
@@ -578,11 +596,11 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 			return fmt.Errorf("%s: start %s: %s", name, svc, res.Stderr)
 		}
 		if isFirst {
-			if err := waitFor(ctx, 180*time.Second, func() (bool, error) {
-				r, _ := r.client.RunSudo("curl -sk https://127.0.0.1:9345/ping")
-				return r != nil && strings.Contains(r.Stdout, "pong"), nil
-			}); err != nil {
-				return fmt.Errorf("%s: registration endpoint never came up: %w", name, err)
+			// Joiners need a serving bootstrap node. Probe via the
+			// bundled kubectl rather than curl, which minimal images
+			// lack.
+			if err := waitServerReady(r.client, 10*time.Minute); err != nil {
+				return fmt.Errorf("%s: bootstrap server never became ready: %w", name, err)
 			}
 		}
 		if err := st.Mark(name, r.role, r.report.Arch, StageRunning, "service active"); err != nil {

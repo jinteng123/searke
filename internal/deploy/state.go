@@ -105,7 +105,8 @@ func LoadStateUnchecked(path, clusterName string) (*State, error) {
 	return LoadState(path, clusterName, "", "", "")
 }
 
-// Save persists the state file with owner-only permissions.
+// Save persists the state file with owner-only permissions via temp
+// file + rename, so a crash mid-write never corrupts resume progress.
 func (s *State) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
@@ -114,7 +115,11 @@ func (s *State) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
 }
 
 // Mark records a node's completed stage and saves. Stages are

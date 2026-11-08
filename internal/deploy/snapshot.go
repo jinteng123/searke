@@ -19,6 +19,15 @@ func connectFirst(c *cluster.Cluster) (Executor, error) {
 	return Connect(first.Address, sshConfig(c))
 }
 
+// checkSnapshotName rejects names that could escape the snapshot dir
+// remotely or the output dir locally.
+func checkSnapshotName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("invalid snapshot name %q", name)
+	}
+	return nil
+}
+
 // SnapshotSave creates an etcd snapshot on the bootstrap server.
 func SnapshotSave(opts *Options, name string) error {
 	c, err := cluster.Load(opts.ClusterFile)
@@ -28,12 +37,15 @@ func SnapshotSave(opts *Options, name string) error {
 	if name == "" {
 		name = "searke-" + time.Now().UTC().Format("20060102-150405")
 	}
+	if err := checkSnapshotName(name); err != nil {
+		return err
+	}
 	cl, err := connectFirst(c)
 	if err != nil {
 		return err
 	}
 	defer cl.Close()
-	res, err := cl.RunSudo("rke2 etcd-snapshot save --name " + shellQuote(name))
+	res, err := cl.RunSudo(rke2Exe + " etcd-snapshot save --name " + shellQuote(name))
 	if err != nil {
 		return err
 	}
@@ -72,6 +84,9 @@ func SnapshotList(opts *Options) error {
 
 // SnapshotPull downloads a snapshot file to a local directory.
 func SnapshotPull(opts *Options, name, outDir string) error {
+	if err := checkSnapshotName(name); err != nil {
+		return err
+	}
 	c, err := cluster.Load(opts.ClusterFile)
 	if err != nil {
 		return err
@@ -98,8 +113,8 @@ func SnapshotPull(opts *Options, name, outDir string) error {
 // remaining servers and start them so they rejoin cleanly.
 // Requires confirm=true (the --yes flag).
 func SnapshotRestore(opts *Options, name string, confirm bool) error {
-	if strings.Contains(name, "/") || strings.Contains(name, "..") {
-		return fmt.Errorf("invalid snapshot name %q", name)
+	if err := checkSnapshotName(name); err != nil {
+		return err
 	}
 	if !confirm {
 		return fmt.Errorf("restore is destructive (etcd cluster-reset from %s/%s); pass --yes to confirm",
@@ -130,6 +145,21 @@ func SnapshotRestore(opts *Options, name string, confirm bool) error {
 	}
 
 	first := c.FirstServer()
+	// 0. Preflight before anything is stopped: every server must be
+	// reachable and the snapshot must exist on the bootstrap server —
+	// a typo must never take the whole control plane down.
+	for _, n := range c.Spec.Servers {
+		if _, err := conn(n); err != nil {
+			return err
+		}
+	}
+	snapPath := snapshotDir + "/" + name
+	if res, err := clients[first.Name].RunSudo("test -s " + shellQuote(snapPath)); err != nil {
+		return fmt.Errorf("%s: %w", first.Name, err)
+	} else if res.ExitCode != 0 {
+		return fmt.Errorf("snapshot %s not found on %s; see `searke snapshot list`", snapPath, first.Name)
+	}
+
 	// 1. Stop rke2-server on every server node.
 	for _, n := range c.Spec.Servers {
 		cl, err := conn(n)
@@ -148,29 +178,35 @@ func SnapshotRestore(opts *Options, name string, confirm bool) error {
 
 	// 2. Cluster-reset on the bootstrap server.
 	cl := clients[first.Name]
-	logf(opts, "cluster-reset --cluster-reset-restore-path=%s/%s on %s", snapshotDir, name, first.Name)
-	res, err := cl.RunSudo(fmt.Sprintf("rke2 server --cluster-reset --cluster-reset-restore-path=%s/%s",
-		snapshotDir, shellQuote(name)))
+	logf(opts, "cluster-reset --cluster-reset-restore-path=%s on %s", snapPath, first.Name)
+	res, err := cl.RunSudo(rke2Exe + " server --cluster-reset --cluster-reset-restore-path=" + shellQuote(snapPath))
 	if err != nil {
 		return fmt.Errorf("cluster-reset: %w", err)
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("cluster-reset failed (exit %d): %s", res.ExitCode, tail(res.Stderr+res.Stdout, 800))
+		return fmt.Errorf("cluster-reset failed (exit %d); all servers are stopped — investigate, then `systemctl start rke2-server`: %s",
+			res.ExitCode, tail(res.Stderr+res.Stdout, 800))
 	}
 	if res, err := cl.RunSudo("systemctl start rke2-server"); err != nil {
 		return err
 	} else if res.ExitCode != 0 {
 		return fmt.Errorf("start rke2-server on %s: %s", first.Name, res.Stderr)
 	}
+	// Peers can only rejoin a serving bootstrap node.
+	if err := waitServerReady(cl, 10*time.Minute); err != nil {
+		return fmt.Errorf("%s after cluster-reset: %w", first.Name, err)
+	}
 
-	// 3. Other servers: wipe etcd db and restart to rejoin.
+	// 3. Other servers: wipe the etcd db and restart to rejoin. The
+	// local snapshots directory is kept — those are backups too.
 	for _, n := range c.Spec.Servers {
 		if n.Name == first.Name {
 			continue
 		}
 		cl := clients[n.Name]
 		logf(opts, "wiping etcd db and restarting %s", n.Name)
-		res, err := cl.RunSudo("rm -rf /var/lib/rancher/rke2/server/db && systemctl start rke2-server")
+		res, err := cl.RunSudo("find /var/lib/rancher/rke2/server/db -mindepth 1 -maxdepth 1 ! -name snapshots -exec rm -rf {} + 2>/dev/null; " +
+			"systemctl start rke2-server")
 		if err != nil {
 			return fmt.Errorf("%s: %w", n.Name, err)
 		}

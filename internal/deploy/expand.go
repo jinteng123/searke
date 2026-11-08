@@ -20,6 +20,18 @@ type AddOptions struct {
 	DryRun  bool     // show the plan without touching nodes or the file
 }
 
+// serverPrefix picks the name prefix for added servers. The bootstrap
+// server is the name-sorted first one, so a new name sorting before it
+// (e.g. "server-1" vs "srv-a") would silently make a fresh node the
+// bootstrap and split the cluster. Fall back to "<first>-N", which
+// always sorts after <first>.
+func serverPrefix(first string) string {
+	if "server-1" < first {
+		return first
+	}
+	return "server"
+}
+
 // Add validates the expanded spec — including connectivity and remote
 // preflight on every listed node — before persisting the new nodes into
 // cluster.yaml, then runs Apply so only the new members converge. The
@@ -70,7 +82,7 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 		}
 		return out
 	}
-	addServers := collect(add.Servers, "server")
+	addServers := collect(add.Servers, serverPrefix(c.FirstServer().Name))
 	addAgents := collect(add.Agents, "agent")
 	if len(addServers)+len(addAgents) == 0 {
 		return fmt.Errorf("all requested addresses are already cluster members")

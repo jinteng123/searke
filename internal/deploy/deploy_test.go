@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -69,6 +70,33 @@ func TestRenderConfigMerges(t *testing.T) {
 	for _, want := range []string{"10.0.0.100", "extra.example.com", "zone=a", "role=cp"} {
 		if !contains(s, want) {
 			t.Errorf("merged config missing %q:\n%s", want, s)
+		}
+	}
+}
+
+func TestServerPrefixKeepsBootstrap(t *testing.T) {
+	for _, first := range []string{"m1", "master", "server-0", "srv-a", "zeta", "server-1", "server-10"} {
+		p := serverPrefix(first)
+		// Mirrors Add's nextName: the first free "<prefix>-N".
+		cand := p + "-1"
+		for i := 2; cand == first; i++ {
+			cand = fmt.Sprintf("%s-%d", p, i)
+		}
+		if cand < first {
+			t.Errorf("first=%s: added name %s sorts before bootstrap", first, cand)
+		}
+	}
+}
+
+func TestCheckSnapshotName(t *testing.T) {
+	for _, ok := range []string{"searke-20261108-013752", "pre-upgrade.db"} {
+		if err := checkSnapshotName(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", "../x", "a/b", `a\b`} {
+		if err := checkSnapshotName(bad); err == nil {
+			t.Errorf("%q accepted", bad)
 		}
 	}
 }

@@ -161,7 +161,7 @@ func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 			break
 		}
 	}
-	if r, _ := c.RunSudo("rke2 --version 2>/dev/null | head -1"); r != nil && r.ExitCode == 0 {
+	if r, _ := c.RunSudo(rke2Exe + " --version 2>/dev/null | head -1"); r != nil && r.ExitCode == 0 {
 		// "rke2 version v1.36.5+rke2r1 (rev abc)"
 		if f := strings.Fields(strings.TrimSpace(r.Stdout)); len(f) >= 3 {
 			rep.InstalledVersion = f[2]
