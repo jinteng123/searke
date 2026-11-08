@@ -13,7 +13,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"golang.org/x/sync/errgroup"
 
@@ -55,7 +57,7 @@ func (s Source) OpenIndex() (v1.ImageIndex, func(), error) {
 		if err != nil {
 			return nil, cleanup, err
 		}
-		ii, err := remote.Index(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		ii, err := fetchIndex(ref)
 		return ii, cleanup, err
 	}
 	fi, err := os.Stat(s.Path)
@@ -261,13 +263,52 @@ func Push(ctx context.Context, layoutDir, refStr string, insecure bool, progress
 	return remote.WriteIndex(ref, ii, append(opts, remote.WithContext(ctx))...)
 }
 
+// fetchIndex resolves a registry reference to an image index. A tag
+// pointing at a single-arch manifest (e.g. the per-arch "-amd64" tags
+// searke pushes) is wrapped in a synthetic one-entry index so every
+// consumer — inspect, pull, and cluster.yaml bundle refs — works
+// uniformly. remote.Index alone refuses those tags because its Accept
+// header excludes single manifests.
+func fetchIndex(ref name.Reference) (v1.ImageIndex, error) {
+	desc, err := remote.Get(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		return nil, err
+	}
+	if desc.MediaType.IsIndex() {
+		return desc.ImageIndex()
+	}
+	if !desc.MediaType.IsImage() {
+		return nil, fmt.Errorf("%s: unsupported media type %s", ref, desc.MediaType)
+	}
+	img, err := desc.Image()
+	if err != nil {
+		return nil, err
+	}
+	add := mutate.IndexAddendum{Add: img}
+	if cf, err := img.ConfigFile(); err == nil && cf != nil {
+		add.Descriptor.Platform = &v1.Platform{
+			OS:           cf.OS,
+			Architecture: cf.Architecture,
+		}
+		// searke builds record version/cni as config labels; promote
+		// them so IndexMeta reports the same data as for a real index.
+		if len(cf.Config.Labels) > 0 {
+			add.Descriptor.Annotations = map[string]string{}
+			for k, v := range cf.Config.Labels {
+				add.Descriptor.Annotations[k] = v
+			}
+		}
+	}
+	return mutate.AppendManifests(empty.Index, add), nil
+}
+
 // PullIndex fetches an index from a registry (for save/inspect).
 func PullIndex(refStr string, insecure bool) (v1.ImageIndex, error) {
 	ref, err := parseRef(refStr, insecure)
 	if err != nil {
 		return nil, err
 	}
-	return remote.Index(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	return fetchIndex(ref)
 }
 
 // SaveTar writes an image index as a .tar archive containing an OCI

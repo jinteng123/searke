@@ -84,7 +84,7 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke version` | ✅ 已实现 | 输出版本/commit/构建时间/Go 版本（`-ldflags -X` 注入） |
 | `searke gen <cluster\|bundle>` | ✅ 已实现 | 输出带注释的 cluster.yaml/bundle.yaml 模板（与 `examples/` 同一来源）；`-o` 写文件且拒绝覆盖 |
 | `searke image pull <ref> -o <dir>` | ✅ 已实现 | registry → 本地 OCI layout（`--insecure` 走 HTTP） |
-| `searke image inspect <ref\|dir\|tar>` | ✅ 已实现 | 打印 index 的 rke2 版本/CNI/平台与 manifest digest |
+| `searke image inspect <ref\|dir\|tar>` | ✅ 已实现（registry 真机已验） | 打印 index 的 rke2 版本/CNI/平台与 manifest digest；指向单架构 manifest 的 tag（如 `-arm64`）自动包装成单条 index 读取，inspect/pull/`bundle:` 引用均可用 |
 | `searke exec -f cluster.yaml [--nodes a,b] -- <cmd>` | ✅ 已实现（3 节点真机已验） | 在选中节点上以 root 执行命令，输出带 `[node]` 前缀；单节点失败不中断，最后聚合报错 |
 | `searke scp -f cluster.yaml [--nodes a,b] <local> <remote>` | ✅ 已实现（3-server 真机已验） | 上传文件到所有选中节点；`--download` 反向拉取到 `<local>/<node>-<basename>` |
 | `searke hosts sync -f cluster.yaml` | ✅ 已实现（3 节点真机已验） | 向每个节点 `/etc/hosts` 写入 `# searke-hosts-begin/end` 管理块（幂等替换）；检测到 cloud-init `manage_etc_hosts` 时警告可能被重启覆盖 |
@@ -98,6 +98,23 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke completion bash\|zsh\|fish\|powershell` | ✅ 已实现 | shell 补全脚本 |
 
 ## 快速流程
+
+**零制作起步（推荐先试）**：公共仓库 `registry.cn-hangzhou.aliyuncs.com/searke/rke2`
+已推送开箱即用的 bundle 镜像，cluster.yaml 直接引用即可跳过下面第 1–4 步：
+
+```yaml
+spec:
+  rke2:
+    bundle: registry.cn-hangzhou.aliyuncs.com/searke/rke2:v1.36.5-rke2r1
+```
+
+- `v1.36.5-rke2r1`：双架构 index（linux/amd64 + linux/arm64，canal，gzip 层）
+- `v1.36.5-rke2r1-amd64` / `v1.36.5-rke2r1-arm64`：单架构 tag，镜像减半（约 730MB），
+  异构集群混用两个 tag 时每个集群选其一即可
+- 工具镜像 `registry.cn-hangzhou.aliyuncs.com/searke/searke:latest` 同样公开，
+  可按上面"Docker 镜像"一节的方式 `docker run` 使用
+
+自己制作（新版 RKE2、换 CNI、完全离线搬运）：
 
 ```bash
 # 1. 声明制品
