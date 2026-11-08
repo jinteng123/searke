@@ -78,7 +78,7 @@ cluster-cidr/service-cidr 默认 10.42/10.43。生成的 cluster.yaml 和 apply 
 | `searke apply -f cluster.yaml` | ✅ 已实现 | 分阶段安装：preflight → 按节点架构分发 payload → 写 config.yaml → install.sh → 首 server → 其他 server → agent → Ready；阶段落盘可断点续跑，已属其他集群的节点会拒绝重置 |
 | `searke status -f cluster.yaml` | ✅ 已实现 | 读取本地 apply 状态 + 从首 server 拉取 `kubectl get nodes` 实时视图 |
 | `searke upgrade -f cluster.yaml` | ✅ 已实现（3-server 真机已验） | 滚动升级（cluster.yaml 换成新版本 bundle 后执行）：升级前自动 etcd 快照 → server 逐台先于 agent：drain → 传新制品 → install.sh → 重启 → 等节点 Ready → uncordon。支持 patch（v1.36.5→v1.36.6）、`+rke2rN` 修订和 +1 minor；拒绝降级、跨 minor、跨 major。中断后重跑跳过已升级节点并自动 uncordon；单节点集群自动跳过 drain；`--skip-drain`/`--skip-snapshot` |
-| `searke snapshot save/list/pull/restore` | ✅ 已实现（save/list/pull 真机已验） | etcd 快照工作流：首 server 上 `rke2 etcd-snapshot save`、列举、拉回本地。restore（需 `--yes`）先确认全部 server 可达且快照存在，然后按 RKE2 HA 流程：停全部 server → 首 server cluster-reset → 等它就绪 → 其余 server 清 etcd 数据重入（保留它们本地的快照目录） |
+| `searke snapshot save/list/pull/restore` | ✅ 已实现（3-server 真机已验） | etcd 快照工作流：首 server 上 `rke2 etcd-snapshot save`、列举、拉回本地。restore（需 `--yes`）先确认全部 server 可达且快照存在，然后按 RKE2 HA 流程：停全部 server → 首 server cluster-reset → 等它就绪 → 其余 server 清 etcd 数据重入（保留它们本地的快照目录） |
 | `searke uninstall -f cluster.yaml --yes` | ✅ 已实现 | 从所有节点移除 RKE2：探测 `/usr/local/bin` 与 `/opt/rke2/bin` 的上游卸载脚本（agent 先于 server），**卸载后校验残留**而非只看退出码；逐节点容错——部分失败时继续卸载其余节点、保留状态并返回非零，`--ignore-unreachable` 可强制清状态；需 `--yes` 确认 |
 | `searke add --nodes/--masters <ip>...` | ✅ 已实现（3-server 真机已验） | sealos 风格扩容：`--agents`/`--servers` 加 worker/master（`--nodes`/`--masters` 为真别名可混用）；**先对扩展后拓扑连节点做 preflight，全部通过才写回** cluster.yaml（地址写错不会污染描述文件）；新节点自动命名 `server-N`/`agent-N`，若会排到首 server 之前则改用 `<首server名>-N`，保证 bootstrap 节点不变；`--dry-run` 只看计划；`--ssh-user/--ssh-key/--ssh-port` 补全 `searke run` 集群的 ssh 配置（与已有值冲突会警告）；server 总数仍受 etcd 奇数校验约束 |
 | `searke version` | ✅ 已实现 | 输出版本/commit/构建时间/Go 版本（`-ldflags -X` 注入） |
@@ -281,8 +281,8 @@ httptest 假 Release 端到端 fetch（含断点续传）、OCI build/extract/sa
 
 - `image push`/`login` 已在本机 `registry:2`（HTTP + htpasswd）和阿里云 ACR 真实验证：`searke/rke2:v1.36.5-rke2r1`（gzip 层双架构 index + `-amd64`/`-arm64` 单架构 tag）、`searke/searke:latest`/`v0.1.0`（工具镜像）。注意 ACR 拒绝 zstd 层（`BLOB_TYPE_INVALID`），推送前需 `image build --compression gzip`
 - cluster.yaml `spec.rke2.insecure: true` 可让 `bundle: <registry-ref>` 走 HTTP；`searke run` 对应 `--insecure`
-- 已真实验证（Parallels Ubuntu 24.04 **arm64** 独立 VM ×3，真实 SSH）：**3-server HA 拓扑完整生命周期**——`apply` 三控制面全 Ready、`exec`/`scp` 上下行、`hosts sync`、`kubeconfig` 本地直连、`cert check/san/rotate` 全链路、`delete` 缩容（3→1：drain→delete node→etcd member 核验→卸载→yaml 更新，member list 确认为 1）、`add` 回补（1→3 全 Ready）、`status` 实时视图、`upgrade` 滚动升级（v1.36.5→v1.36.6：前置 etcd 快照、逐台 drain→重传制品→install.sh→就绪等待→uncordon、etcd quorum 全程保持、中断重跑自愈 cordon、升完重跑幂等退出）。另在早期 2 节点环境验过 `searke run` 单节点、`uninstall` 重装闭环、`snapshot save/list/pull`、幂等重跑
-- 未真实验证：HA `snapshot restore`（流程按 RKE2 官方文档实现，带快照存在性预检）
+- 已真实验证（Parallels Ubuntu 24.04 **arm64** 独立 VM ×3，真实 SSH）：**3-server HA 拓扑完整生命周期**——`apply` 三控制面全 Ready、`exec`/`scp` 上下行、`hosts sync`、`kubeconfig` 本地直连、`cert check/san/rotate` 全链路、`delete` 缩容（3→1：drain→delete node→etcd member 核验→卸载→yaml 更新，member list 确认为 1）、`add` 回补（1→3 全 Ready）、`status` 实时视图、`upgrade` 滚动升级（v1.36.5→v1.36.6：前置 etcd 快照、逐台 drain→重传制品→install.sh→就绪等待→uncordon、etcd quorum 全程保持、中断重跑自愈 cordon、升完重跑幂等退出）、`snapshot restore` HA 恢复（预检→全停→首 server cluster-reset→就绪等待→peer 清 etcd 重入且保留本地快照目录；快照后写入的 marker 确认消失）、`uninstall` 3 节点全量卸载 + 全新 `apply` 重装（含首 server `/readyz` 就绪门）。另在早期 2 节点环境验过 `searke run` 单节点、`snapshot save/list/pull`、幂等重跑
+- 全部已声明功能均完成真机验证
 - 节点 OS：RKE2 tar 安装与发行版无关，preflight 仅警告非 Ubuntu 发行版（Ubuntu 22.04 / 24.04 已真机验证）。硬性限制：SELinux 必须为 Permissive/Disabled（tar 安装不含 rke2-selinux 策略）；firewalld active / NetworkManager 未豁免 `cali*`/`flannel*` / 缺 iptables 各给一条警告
 - `image serve` 无 TLS/认证，仅供可信内网
 - `cert rotate` 只处理 server；agent 的客户端证书由 kubelet 自动轮转

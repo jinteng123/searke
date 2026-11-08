@@ -14,7 +14,7 @@
 | 阶段 1：`bundle fetch`/`verify` | ✅ 完成 | `v1.36.5+rke2r1` amd64+arm64 全量下载、上游 SHA256 校验、`bundle.lock.yaml` 生成真实通过；超时/重试/断点续传/原子落盘已实现 |
 | 阶段 2：`image build/push/save/load` | ✅ 完成 | build/save/load 真实验证（1.5GB 双架构归档）；push 已在阿里云 ACR（`registry.cn-hangzhou.aliyuncs.com`）真实推送验证 |
 | 阶段 3：`validate/plan/apply` | ✅ 完成 | Parallels Ubuntu 22.04 arm64 VM 实测：SSH apply 单节点 + agent join 组成 2 节点集群、幂等重跑、本机节点本地执行安装全部通过；preflight 拦获并处理了缺省路由、主机名重复、known_hosts 算法不匹配等实机问题 |
-| 阶段 4：`status`+生命周期 | ✅ 基本验证 | `status`（状态+live kubectl）、`snapshot save/list/pull`、3-server HA 拓扑、`add`/`delete` 全链路、`upgrade` 滚动升级（v1.36.5→v1.36.6：前置 etcd 快照、逐台 drain→换包→就绪等待→uncordon、etcd quorum 全程保持、幂等重跑/断点续跑）均已在 Parallels 3-server 真机验证；仅剩 `snapshot restore` HA 恢复流程未实机验证 |
+| 阶段 4：`status`+生命周期 | ✅ 基本验证 | `status`（状态+live kubectl）、`snapshot save/list/pull`、3-server HA 拓扑、`add`/`delete` 全链路、`upgrade` 滚动升级（v1.36.5→v1.36.6：前置 etcd 快照、逐台 drain→换包→就绪等待→uncordon、etcd quorum 全程保持、幂等重跑/断点续跑）、`snapshot restore` HA 恢复（快照后数据正确回滚、peer 保留本地快照）、`uninstall`→`apply` 全新重装均已在 Parallels 3-server 真机验证 |
 
 **代码评审加固（upgrade 真机验证后）：** ① rke2 调用统一经 `rke2Exe`（显式补 `/usr/local/bin:/opt/rke2/bin`）——RHEL 系 sudo `secure_path` 不含 `/usr/local/bin`，原先 preflight 读不到已装版本（升级重跑会重复升级、apply 版本漂移守卫失效），snapshot save/restore 与 upgrade 前置快照直接失败；② `snapshot restore` 在停任何服务前先确认全部 server 可达且快照存在，首 server cluster-reset 后等 `/readyz` 再起其余 server，peer 清 etcd 时保留本地快照目录，快照名统一校验防路径穿越；③ bootstrap 节点按名字排序决定，`add` 自动命名 `server-N` 可能排到原首 server 之前（如 `srv-a`），导致新节点自行初始化独立集群——命名改为必要时用 `<首server>-N`，apply 对比 state 记录的 bootstrap，发生变化即拒绝；④ 首 server 就绪探测由 `curl :9345/ping` 改为内置 kubectl `/readyz`，去掉目标节点 curl 依赖；⑤ state 文件改临时文件 + rename 原子写。
 
