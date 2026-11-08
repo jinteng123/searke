@@ -15,6 +15,7 @@ type PreflightReport struct {
 	OS               string // distro id
 	OSVersion        string
 	HasRKE2          bool   // /var/lib/rancher/rke2 exists
+	CgroupV2         bool   // unified cgroup hierarchy
 	Service          string // rke2-server | rke2-agent | ""
 	ServiceState     string // systemd is-active output
 	ConfigExists     bool
@@ -86,6 +87,23 @@ func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 	if r, _ := c.RunSudo("getenforce 2>/dev/null"); r != nil && r.ExitCode == 0 &&
 		strings.TrimSpace(r.Stdout) == "Enforcing" {
 		return nil, fmt.Errorf("%s: SELinux is Enforcing but the tar install carries no SELinux policy: `setenforce 0` (and disable in /etc/selinux/config) or install rke2-selinux first", nodeName)
+	}
+
+	// kubelet on Kubernetes >= 1.32 refuses cgroup v1 outright; older
+	// distros (Kylin V10, CentOS 7, Alinux 2...) still boot with it.
+	// The unified hierarchy is recognised by its controllers file.
+	if r, _ := c.Run("test -f /sys/fs/cgroup/cgroup.controllers"); r != nil && r.ExitCode == 0 {
+		rep.CgroupV2 = true
+	} else {
+		rep.Warnings = append(rep.Warnings,
+			"host runs cgroup v1; RKE2 >= v1.32 requires cgroup v2 (boot with systemd.unified_cgroup_hierarchy=1, or use RKE2 <= v1.31)")
+	}
+
+	// kubelet fails outright when swap is on and no swapBehavior is set.
+	if r, _ := c.Run("tail -n +2 /proc/swaps 2>/dev/null"); r != nil && r.ExitCode == 0 &&
+		strings.TrimSpace(r.Stdout) != "" {
+		rep.Warnings = append(rep.Warnings,
+			"swap is enabled; kubelet refuses to start — `swapoff -a` and remove it from /etc/fstab")
 	}
 
 	// kubelet and Canal program rules through iptables (the nft frontend

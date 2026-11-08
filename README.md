@@ -277,6 +277,9 @@ searke image serve rke2-oci --address 0.0.0.0:5000
 **`downgrades are not supported` / `skips N minor versions`**
 不支持降级。每次只能升一个小版本，需要跨多个版本时请逐级升级。
 
+**kubelet 崩溃循环、`run cgroup v1` 报错**
+节点内核还是 cgroup v1（麒麟 V10、CentOS 7、Alinux 2 等老系统），而 k8s 1.32+ 的 kubelet 要求 cgroup v2。用 `grubby --update-kernel=ALL --args="systemd.unified_cgroup_hierarchy=1"` 切到 v2 并重启；内核不支持就只能用 RKE2 ≤ v1.31 或换系统镜像。新版 searke 的 `validate`/`apply`/`upgrade` 会提前拦下这类节点。
+
 **下载很慢**
 设置代理：`export HTTPS_PROXY=http://代理:端口`。使用 `sudo` 运行时，需要写成 `sudo HTTPS_PROXY=... searke ...`。
 

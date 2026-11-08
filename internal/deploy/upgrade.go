@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jint/searke/internal/bundle"
@@ -13,6 +14,38 @@ import (
 )
 
 var versionNumRe = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)`)
+
+// cgroupV2Required reports whether the version's kubelet refuses
+// cgroup v1 hosts (Kubernetes removed v1 support in 1.32).
+func cgroupV2Required(version string) bool {
+	m := versionNumRe.FindStringSubmatch(version)
+	if m == nil {
+		return false
+	}
+	min, _ := strconv.Atoi(m[2])
+	return min >= 32
+}
+
+// requireCgroupV2 refuses to touch nodes whose kernel still runs
+// cgroup v1 when the target needs the unified hierarchy — kubelet
+// would exit immediately after install.
+func requireCgroupV2(rts []*nodeRuntime, version string) error {
+	if !cgroupV2Required(version) {
+		return nil
+	}
+	var bad []string
+	for _, r := range rts {
+		if !r.report.CgroupV2 {
+			bad = append(bad, r.node.Name)
+		}
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("nodes %s run cgroup v1 but %s requires cgroup v2: "+
+			"boot with systemd.unified_cgroup_hierarchy=1 or stay on RKE2 <= v1.31",
+			strings.Join(bad, ", "), version)
+	}
+	return nil
+}
 
 // checkUpgradePath validates an RKE2 version transition: same major,
 // at most one minor ahead, never a downgrade. Patch and +rke2rN
@@ -85,6 +118,9 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 		for _, w := range r.report.Warnings {
 			logf(opts, "  warning %s: %s", r.node.Name, w)
 		}
+	}
+	if err := requireCgroupV2(rts, target); err != nil {
+		return err
 	}
 
 	first := findRuntime(rts, c.FirstServer().Name)

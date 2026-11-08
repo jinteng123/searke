@@ -81,6 +81,22 @@ func TestPreflightHealthyNode(t *testing.T) {
 	}
 }
 
+func TestPreflightCgroupV1AndSwapWarn(t *testing.T) {
+	ex := healthyNode()
+	ex.fail = append(ex.fail, "cgroup.controllers")
+	ex.outs["/proc/swaps"] = "Filename\tType\tSize\n/dev/zram0\tpartition\t1048576"
+	rep, err := Preflight(ex, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.CgroupV2 {
+		t.Fatal("cgroup v1 host must report CgroupV2=false")
+	}
+	if !hasWarning(rep, "cgroup v1") || !hasWarning(rep, "swap") {
+		t.Fatalf("missing cgroup/swap warnings: %v", rep.Warnings)
+	}
+}
+
 func TestPreflightNonUbuntuWarns(t *testing.T) {
 	ex := healthyNode()
 	ex.outs["os-release"] = "alinux 3"

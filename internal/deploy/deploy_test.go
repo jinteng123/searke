@@ -101,6 +101,19 @@ func TestCheckSnapshotName(t *testing.T) {
 	}
 }
 
+func TestCgroupV2Required(t *testing.T) {
+	for v, want := range map[string]bool{
+		"v1.31.13+rke2r1": false,
+		"v1.32.1+rke2r1":  true,
+		"v1.36.5+rke2r1":  true,
+		"bogus":           false,
+	} {
+		if got := cgroupV2Required(v); got != want {
+			t.Errorf("%s: got %v want %v", v, got, want)
+		}
+	}
+}
+
 func TestCheckUpgradePath(t *testing.T) {
 	ok := [][2]string{
 		{"v1.36.5+rke2r1", "v1.36.6+rke2r1"}, // patch bump

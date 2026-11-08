@@ -258,6 +258,9 @@ func Apply(ctx context.Context, opts *Options) error {
 		return err
 	}
 	defer closeAll(rts)
+	if err := requireCgroupV2(rts, rb.Meta.Version); err != nil {
+		return err
+	}
 	for _, r := range rts {
 		if r.report.Service != "" && r.report.ServiceState == "active" &&
 			r.report.InstalledVersion != "" && r.report.InstalledVersion != rb.Meta.Version {
