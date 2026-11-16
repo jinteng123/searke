@@ -136,6 +136,8 @@ searke apply    -f cluster.yaml   # 开始安装
 
 `apply` 可以重复执行：已经装好的节点会自动跳过，中途失败时再次执行会从断点继续。
 
+安装时会实时显示制品解包和上传进度、`install.sh` 输出及 RKE2 systemd 日志；等待服务或节点 Ready 时每 5 秒报告一次状态。完整日志保存在 `~/.searke/logs/<集群名>/`，启动时会打印本次日志文件路径。
+
 ### 4.4 用 kubectl 访问
 
 ```bash

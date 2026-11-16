@@ -1,10 +1,10 @@
 # Searke 开发计划：RKE2 多架构集群镜像与 apply
 
-- 文档状态：提案（阶段 0–3 代码已实现，见下方实现状态）
-- 更新日期：2026-11-06
+- 文档状态：滚动更新（阶段 0–3 已实现，阶段 4 已基本验证）
+- 更新日期：2026-11-16
 - 目标产品：`searke` 单文件命令行工具
 
-## 实现状态（2026-11-06）
+## 实现状态（2026-11-16）
 
 代码位于 `cmd/searke` + `internal/{bundle,cluster,ociimg,deploy,cli}`，用法见根目录 `README.md`。
 
@@ -15,6 +15,8 @@
 | 阶段 2：`image build/push/save/load` | ✅ 完成 | build/save/load 真实验证（1.5GB 双架构归档）；push 已在阿里云 ACR（`registry.cn-hangzhou.aliyuncs.com`）真实推送验证 |
 | 阶段 3：`validate/plan/apply` | ✅ 完成 | Parallels Ubuntu 22.04 arm64 VM 实测：SSH apply 单节点 + agent join 组成 2 节点集群、幂等重跑、本机节点本地执行安装全部通过；preflight 拦获并处理了缺省路由、主机名重复、known_hosts 算法不匹配等实机问题 |
 | 阶段 4：`status`+生命周期 | ✅ 基本验证 | `status`（状态+live kubectl）、`snapshot save/list/pull`、3-server HA 拓扑、`add`/`delete` 全链路、`upgrade` 滚动升级（v1.36.5→v1.36.6：前置 etcd 快照、逐台 drain→换包→就绪等待→uncordon、etcd quorum 全程保持、幂等重跑/断点续跑）、`snapshot restore` HA 恢复（快照后数据正确回滚、peer 保留本地快照）、`uninstall`→`apply` 全新重装均已在 Parallels 3-server 真机验证 |
+
+**实时进度与日志改造（2026-11-16）：** `apply` 已实现 OCI 归档解包字节进度、OCI 层提取状态、SFTP/本地文件上传字节和速度、SSH 安装脚本逐行输出、systemd journal 跟随、服务启动及节点 Ready 心跳；CLI 写入 `~/.searke/logs/<cluster>/apply-<run-id>.log`。本地 `go build ./...` 通过；新输出路径仍需在目标 VM 上做一次 `apply` 实际观察。
 
 **代码评审加固（upgrade 真机验证后）：** ① rke2 调用统一经 `rke2Exe`（显式补 `/usr/local/bin:/opt/rke2/bin`）——RHEL 系 sudo `secure_path` 不含 `/usr/local/bin`，原先 preflight 读不到已装版本（升级重跑会重复升级、apply 版本漂移守卫失效），snapshot save/restore 与 upgrade 前置快照直接失败；② `snapshot restore` 在停任何服务前先确认全部 server 可达且快照存在，首 server cluster-reset 后等 `/readyz` 再起其余 server，peer 清 etcd 时保留本地快照目录，快照名统一校验防路径穿越；③ bootstrap 节点按名字排序决定，`add` 自动命名 `server-N` 可能排到原首 server 之前（如 `srv-a`），导致新节点自行初始化独立集群——命名改为必要时用 `<首server>-N`，apply 对比 state 记录的 bootstrap，发生变化即拒绝；④ 首 server 就绪探测由 `curl :9345/ping` 改为内置 kubectl `/readyz`，去掉目标节点 curl 依赖；⑤ state 文件改临时文件 + rename 原子写。
 
@@ -37,7 +39,7 @@
 - 用 Go 单文件 CLI 完成离线制品下载、校验、多架构 OCI 镜像打包和 `apply` 部署。
 - 使用 OCI Image Index 将同一 RKE2 版本的 `linux/amd64`、`linux/arm64` 子镜像放在同一个镜像引用下。
 - 支持 Registry 引用和本地 OCI 归档，安装节点不需要 Docker、Ansible 或 Python。
-- 支持 `validate`、`plan`、`apply` 和 `status`，并允许 `apply` 在中断后安全重跑。
+- 支持 `validate`、`plan`、`apply` 和 `status`；`apply` 实时显示阶段进度和远端 RKE2 日志，并允许中断后安全重跑。
 
 ### 首期不做
 
@@ -242,6 +244,20 @@ spec:
 
 幂等要求：相同 bundle 和集群配置重复执行时，只恢复未完成步骤；遇到已经属于其他集群的节点、版本不匹配或配置漂移时停止并指出冲突，不自动 `reset` 或卸载已有集群。`plan` 不执行远端变更。
 
+### 进度和日志输出
+
+`apply` 的默认输出必须能区分“任务仍在运行”和“任务卡住”。它按阶段和节点显示状态，例如 `preflight 6/6`、`上传 worker-2 420/727 MB (58%)`、`等待 master-1 的 API server，已用 00:35`。只对文件传输等已知总量的工作显示百分比；启动和健康检查显示当前状态、已用时间和最近日志，不估算虚假百分比。
+
+- SSH 命令使用流式 stdout/stderr 管道，逐行输出并带时间戳和节点前缀；不要等远端命令全部结束后才打印 `CombinedOutput`。
+- 上传或下载通过已传字节数和文件总大小计算真实进度；大文件同时显示速度。网络阶段无新字节时，每隔几秒报告仍在传输或重试。
+- 执行 `systemctl start rke2-server` 或 `rke2-agent` 前启动对应的 `journalctl -fu <unit>` 远端日志流。服务就绪后停止跟随；服务启动超时或失败时，保留实时输出并附上最近日志。
+- 控制面等待期间按固定间隔输出探测状态，例如 API 可连接、server 节点 Ready 数、agent 节点 Ready 数和已等待时间。无新日志也定期输出心跳。
+- server 仍按顺序加入；各节点日志行用 `[master-1]`、`[worker-2]` 这类前缀区分。并发 agent 的输出可交错，但不能丢弃或整段延后。
+- 默认把本次完整输出写入 `~/.searke/logs/<cluster>/apply-<run-id>.log`，文件权限限制为当前用户可读写；终端开头给出日志路径，完成或失败时保留各节点状态。后续可增加 `--verbose` 展示 SSH 细节；token、私钥和敏感配置必须脱敏。
+- TTY 下可用动态进度显示；CI 或日志重定向时输出稳定的普通文本行，避免依赖终端控制字符。后续可增加 `--output json` 供界面或流水线消费。
+
+输出验收：任何远端操作超过 10 秒没有日志时，仍须看到带节点名和已用时间的状态心跳；安装失败时，错误摘要包含失败阶段、节点、退出码和最近的 systemd 日志。
+
 ## 8. 分阶段开发计划
 
 每个开发项控制在约 1–2 天；阶段日期待第一次 OCI 与下载原型验证后再排。先消除最大技术不确定性，不并行开发互相依赖的模块。
@@ -276,6 +292,7 @@ spec:
 - 实现 SSH、SFTP、远端 preflight 和分发。
 - 实现单 server + agent 验证流，再扩展为三 server + 三 agent。
 - 实现 token 获取、节点角色配置、systemd 启动、健康检查和失败恢复记录。
+- 实现 SSH 输出实时转发、systemd journal 跟随、文件字节进度、等待心跳和本地运行日志。
 - 实现重复执行保护和 `plan` 只读输出。
 
 **完成标准：** ARM64 和 AMD64 集群分别可从本地 OCI 归档离线安装；无 Python/Ansible 运行时；中断后重跑可续做；错误架构、错误 checksum 和不满足 preflight 时不会启动安装。
@@ -308,6 +325,7 @@ spec:
 - 所有源文件和 OCI 层均可按摘要追溯和校验。
 - Registry 与本地 OCI 归档两种输入都能驱动 `apply`。
 - `apply` 通过目标节点架构选择载荷，并以无 Ansible/Python 依赖方式部署 RKE2。
+- 安装、传输和健康检查期间持续显示阶段或节点状态；远端启动日志实时可见，失败时能定位节点和阶段。
 - 三 server + 三 agent 集群完成 HA 注册、节点 Ready 和重复 apply 验证。
 - README、bundle schema、cluster schema、故障排查和版本升级说明随实现更新。
 

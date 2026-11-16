@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -82,7 +83,13 @@ func loadAndResolve(opts *Options) (*cluster.Cluster, *ResolvedBundle, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	ii, cleanup, err := src.OpenIndex()
+	logf(opts, "resolving RKE2 bundle %s (a local OCI archive may take a while to unpack)", c.Spec.RKE2.Bundle)
+	ii, cleanup, err := src.OpenIndexProgress(func(read, total int64) {
+		if total <= 0 {
+			return
+		}
+		logf(opts, "  bundle archive: %s/%s (%.1f%%)", formatBytes(read), formatBytes(total), float64(read)*100/float64(total))
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("open bundle %s: %w", c.Spec.RKE2.Bundle, err)
 	}
@@ -134,7 +141,8 @@ func connectAll(c *cluster.Cluster, opts *Options) ([]*nodeRuntime, error) {
 			mode = "local exec"
 		}
 		logf(opts, "  connect %s (%s, %s)", n.Name, n.Address, mode)
-		rep, err := Preflight(cl, n.Name)
+		logf(opts, "  [%s] checking OS, architecture, disk, network, and existing RKE2 state", n.Name)
+		rep, err := preflightWithHeartbeat(cl, n.Name, opts)
 		if err != nil {
 			cl.Close()
 			return nil, err
@@ -152,6 +160,29 @@ func connectAll(c *cluster.Cluster, opts *Options) ([]*nodeRuntime, error) {
 		runtimes = append(runtimes, &nodeRuntime{node: n, role: role, client: cl, report: rep})
 	}
 	return runtimes, nil
+}
+
+func preflightWithHeartbeat(ex Executor, node string, opts *Options) (*PreflightReport, error) {
+	type result struct {
+		report *PreflightReport
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		rep, err := Preflight(ex, node)
+		done <- result{report: rep, err: err}
+	}()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	started := time.Now()
+	for {
+		select {
+		case res := <-done:
+			return res.report, res.err
+		case <-ticker.C:
+			logf(opts, "  [%s] preflight still running (elapsed %s)", node, time.Since(started).Round(time.Second))
+		}
+	}
 }
 
 func closeAll(rts []*nodeRuntime) {
@@ -287,14 +318,16 @@ func Apply(ctx context.Context, opts *Options) error {
 	}
 	defer os.RemoveAll(scratch)
 	payloadDirs := map[bundle.Platform]string{}
-	for _, r := range rts {
+	for i, r := range rts {
 		if r.report.Service != "" && r.report.ServiceState == "active" {
+			logf(opts, "  [%d/%d] %s: active service found, skip payload", i+1, len(rts), r.node.Name)
 			continue // healthy node needs no new payload
 		}
 		if st.Done(r.node.Name, StageDistributed) && remotePayloadOK(r) {
-			logf(opts, "  %s: already distributed, skipping", r.node.Name)
+			logf(opts, "  [%d/%d] %s: payload already present, skipping", i+1, len(rts), r.node.Name)
 			continue
 		}
+		logf(opts, "  [%d/%d] %s (%s): distributing payload", i+1, len(rts), r.node.Name, r.report.Arch)
 		if err := distribute(ctx, c, rb, r, scratch, payloadDirs, opts); err != nil {
 			return err
 		}
@@ -337,9 +370,20 @@ func Apply(ctx context.Context, opts *Options) error {
 	}
 
 	logf(opts, "== phase 6: readiness ==")
+	stopJournals := make([]func(), 0, len(rts))
+	for _, r := range rts {
+		stopJournals = append(stopJournals, followJournal(ctx, r, "rke2-"+r.role, opts))
+	}
+	stopAllJournals := func() {
+		for i := len(stopJournals) - 1; i >= 0; i-- {
+			stopJournals[i]()
+		}
+	}
 	if err := waitReady(ctx, first, nodeNames(rts), opts); err != nil {
+		stopAllJournals()
 		return err
 	}
+	stopAllJournals()
 	for _, r := range rts {
 		if err := st.Mark(r.node.Name, r.role, r.report.Arch, StageReady, "node Ready"); err != nil {
 			return err
@@ -407,9 +451,11 @@ func distribute(ctx context.Context, c *cluster.Cluster, rb *ResolvedBundle, r *
 
 	payloadDir, ok := cache[p]
 	if !ok {
-		logf(opts, "  extracting %s payload from bundle", p)
 		tmp := filepath.Join(scratch, p.DirName())
-		if err := ociimg.ExtractPayload(rb.II, p, tmp); err != nil {
+		logf(opts, "  [%s] extracting %s OCI payload", r.node.Name, p)
+		if err := ociimg.ExtractPayloadProgress(rb.II, p, tmp, func(layer int, bytesRead int64) {
+			logf(opts, "  [%s] extracting %s layer %d: %s streamed", r.node.Name, p, layer, formatBytes(bytesRead))
+		}); err != nil {
 			return fmt.Errorf("%s: %w", r.node.Name, err)
 		}
 		payloadDir = filepath.Join(tmp, "opt", "searke")
@@ -427,8 +473,7 @@ func distribute(ctx context.Context, c *cluster.Cluster, rb *ResolvedBundle, r *
 	if err := r.client.PrepareStaging(); err != nil {
 		return fmt.Errorf("%s: %w", r.node.Name, err)
 	}
-	logf(opts, "  %s: upload install.sh", r.node.Name)
-	if err := r.client.UploadFile(payloadDir+"/install.sh", RemoteRoot+"/install.sh", 0o755); err != nil {
+	if err := uploadPayloadFile(r, payloadDir+"/install.sh", RemoteRoot+"/install.sh", 0o755, opts); err != nil {
 		return fmt.Errorf("%s: upload: %w", r.node.Name, err)
 	}
 	files, err := bundle.Summarize(payloadDir + "/payload")
@@ -436,12 +481,71 @@ func distribute(ctx context.Context, c *cluster.Cluster, rb *ResolvedBundle, r *
 		return err
 	}
 	for _, name := range files {
-		logf(opts, "  %s: upload %s", r.node.Name, name)
-		if err := r.client.UploadFile(filepath.Join(payloadDir, "payload", name), RemoteArtifacts+"/"+name, 0o644); err != nil {
+		if err := uploadPayloadFile(r, filepath.Join(payloadDir, "payload", name), RemoteArtifacts+"/"+name, 0o644, opts); err != nil {
 			return fmt.Errorf("%s: upload %s: %w", r.node.Name, name, err)
 		}
 	}
 	return nil
+}
+
+func uploadPayloadFile(r *nodeRuntime, local, remote string, mode os.FileMode, opts *Options) error {
+	info, err := os.Stat(local)
+	if err != nil {
+		return err
+	}
+	total := info.Size()
+	started := time.Now()
+	logf(opts, "  [%s] uploading %s (%s)", r.node.Name, filepath.Base(local), formatBytes(total))
+	var transferred atomic.Int64
+	stopHeartbeat := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		last := int64(-1)
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-ticker.C:
+				now := transferred.Load()
+				if now == last && now < total {
+					logf(opts, "  [%s] still uploading %s (%s/%s, elapsed %s)", r.node.Name, filepath.Base(local), formatBytes(now), formatBytes(total), time.Since(started).Round(time.Second))
+				}
+				last = now
+			}
+		}
+	}()
+	progress := func(written, size int64) {
+		transferred.Store(written)
+		if size == 0 {
+			return
+		}
+		pct := float64(written) * 100 / float64(size)
+		elapsed := time.Since(started).Seconds()
+		if elapsed < 0.5 {
+			logf(opts, "  [%s] %s: %s/%s (%.1f%%)", r.node.Name, filepath.Base(local), formatBytes(written), formatBytes(size), pct)
+			return
+		}
+		rate := float64(written) / elapsed / (1024 * 1024)
+		logf(opts, "  [%s] %s: %s/%s (%.1f%%, %.1f MiB/s)", r.node.Name, filepath.Base(local), formatBytes(written), formatBytes(size), pct, rate)
+	}
+	err = uploadWithProgress(r.client, local, remote, mode, progress)
+	close(stopHeartbeat)
+	<-heartbeatDone
+	if err != nil {
+		return err
+	}
+	logf(opts, "  [%s] uploaded %s in %s", r.node.Name, filepath.Base(local), time.Since(started).Round(time.Second))
+	return nil
+}
+
+func formatBytes(n int64) string {
+	if n < 1024*1024 {
+		return fmt.Sprintf("%.0f KiB", float64(n)/1024)
+	}
+	return fmt.Sprintf("%.1f MiB", float64(n)/(1024*1024))
 }
 
 // renderConfig builds /etc/rancher/rke2/config.yaml content.
@@ -570,13 +674,13 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 	}
 
 	if !st.Done(name, StageInstalled) {
-		logf(opts, "  %s: run install.sh (%s)", name, r.role)
+		logf(opts, "  [%s] running the RKE2 installer (%s); output streams live", name, r.role)
 		// The upstream installer copies artifacts and enables nothing;
 		// service start is controlled by searke below.
 		installCmd := fmt.Sprintf(
 			"INSTALL_RKE2_ARTIFACT_PATH=%s INSTALL_RKE2_TYPE=%s INSTALL_RKE2_VERSION=%s sh %s",
 			shellQuote(RemoteArtifacts), r.role, shellQuote(st.Version), RemoteRoot+"/install.sh")
-		res, err := r.client.RunSudo(installCmd)
+		res, err := runSudoStreamingWithHeartbeat(ctx, r.client, installCmd, opts, name, "running install.sh", 10*time.Second)
 		if err != nil {
 			return fmt.Errorf("%s: install.sh: %w", name, err)
 		}
@@ -590,27 +694,80 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 
 	if !st.Done(name, StageRunning) {
 		svc := "rke2-" + r.role
-		logf(opts, "  %s: enable+start %s", name, svc)
-		res, err := r.client.RunSudo("systemctl enable " + svc + " && systemctl start " + svc)
+		logf(opts, "  [%s] enabling %s", name, svc)
+		res, err := r.client.RunSudo("systemctl enable " + svc)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		if res.ExitCode != 0 {
-			return fmt.Errorf("%s: start %s: %s", name, svc, res.Stderr)
+			return fmt.Errorf("%s: enable %s: %s", name, svc, res.Stderr)
+		}
+		if err := startService(ctx, r, svc, opts); err != nil {
+			return err
 		}
 		if isFirst {
 			// Joiners need a serving bootstrap node. Probe via the
 			// bundled kubectl rather than curl, which minimal images
 			// lack.
-			if err := waitServerReady(r.client, 10*time.Minute); err != nil {
+			stopJournal := followJournal(ctx, r, svc, opts)
+			if err := waitServerReadyContext(ctx, r.client, 10*time.Minute, func(msg string) {
+				logf(opts, "  [%s] %s", name, msg)
+			}); err != nil {
+				stopJournal()
 				return fmt.Errorf("%s: bootstrap server never became ready: %w", name, err)
 			}
+			stopJournal()
 		}
 		if err := st.Mark(name, r.role, r.report.Arch, StageRunning, "service active"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func startService(ctx context.Context, r *nodeRuntime, service string, opts *Options) error {
+	name := r.node.Name
+	logf(opts, "  [%s] starting %s; streaming systemd journal", name, service)
+	stopJournal := followJournal(ctx, r, service, opts)
+	type commandResult struct {
+		result *Result
+		err    error
+	}
+	done := make(chan commandResult, 1)
+	go func() {
+		res, err := runSudoStreaming(ctx, r.client, "systemctl start "+shellQuote(service), opts, name)
+		done <- commandResult{result: res, err: err}
+	}()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	started := time.Now()
+	for {
+		select {
+		case result := <-done:
+			stopJournal()
+			if result.err != nil {
+				return fmt.Errorf("%s: start %s: %w", name, service, result.err)
+			}
+			if result.result == nil || result.result.ExitCode != 0 {
+				if result.result == nil {
+					return fmt.Errorf("%s: start %s returned no result", name, service)
+				}
+				return fmt.Errorf("%s: start %s failed (exit %d): %s", name, service,
+					result.result.ExitCode, tail(result.result.Stderr+result.result.Stdout, 800))
+			}
+			return nil
+		case <-ctx.Done():
+			stopJournal()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+			}
+			return ctx.Err()
+		case <-ticker.C:
+			logf(opts, "  [%s] still waiting for %s to start (elapsed %s)", name, service, time.Since(started).Round(time.Second))
+		}
+	}
 }
 
 // fetchToken reads the node token from the bootstrap server. It is kept
@@ -632,37 +789,76 @@ func fetchToken(first *nodeRuntime) (string, error) {
 
 // waitReady polls kubectl on the bootstrap server until every node is Ready.
 func waitReady(ctx context.Context, first *nodeRuntime, names map[string]string, opts *Options) error {
-	kctl := fmt.Sprintf("%s --kubeconfig %s --request-timeout=90s", kubectlPath, kubeconfigPath)
-	return waitFor(ctx, 5*time.Minute, func() (bool, error) {
+	const timeout = 10 * time.Minute
+	started, deadline := time.Now(), time.Now().Add(timeout)
+	kctl := fmt.Sprintf("%s --kubeconfig %s --request-timeout=10s", kubectlPath, kubeconfigPath)
+	lastReport := time.Time{}
+	lastReady := -1
+	for {
 		res, err := first.client.RunSudo(kctl + " get nodes --no-headers")
-		if err != nil || res.ExitCode != 0 {
-			return false, nil
-		}
 		ready := map[string]bool{}
-		for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
-			f := strings.Fields(line)
-			if len(f) >= 2 {
-				// "Ready" or "Ready,SchedulingDisabled" (cordoned
-				// nodes stay schedulable=false until uncordoned).
-				ready[f[0]] = f[1] == "Ready" || strings.HasPrefix(f[1], "Ready,")
-			}
-		}
-		for _, nodeName := range names {
-			ok := ready[nodeName]
-			if !ok {
-				// fall back to hostname match
-				for h, nn := range names {
-					if nn == nodeName {
-						ok = ready[h]
-					}
+		if err == nil && res.ExitCode == 0 {
+			for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+				f := strings.Fields(line)
+				if len(f) >= 2 {
+					// "Ready" or "Ready,SchedulingDisabled" (cordoned
+					// nodes stay schedulable=false until uncordoned).
+					ready[f[0]] = f[1] == "Ready" || strings.HasPrefix(f[1], "Ready,")
 				}
 			}
-			if !ok {
-				return false, nil
+		}
+		count := 0
+		for _, nodeName := range names {
+			if ready[nodeName] {
+				count++
+				continue
+			}
+			// Fall back to the host name reported by Kubernetes.
+			for hostname, configuredName := range names {
+				if configuredName == nodeName && ready[hostname] {
+					count++
+					break
+				}
 			}
 		}
-		return true, nil
-	})
+		if count == len(names) {
+			return nil
+		}
+		if count != lastReady || time.Since(lastReport) >= 5*time.Second {
+			logf(opts, "  waiting for nodes Ready: %d/%d (elapsed %s)", count, len(names), time.Since(started).Round(time.Second))
+			lastReady, lastReport = count, time.Now()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s; %d/%d nodes Ready", timeout, count, len(names))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+// followJournal streams a service journal while a readiness probe is waiting.
+// The returned function stops and joins the SSH/local stream.
+func followJournal(ctx context.Context, r *nodeRuntime, service string, opts *Options) func() {
+	followCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	cmd := "journalctl -fu " + shellQuote(service) + " -n 20 --no-pager"
+	go func() {
+		defer close(done)
+		if _, err := runSudoStreaming(followCtx, r.client, cmd, opts, r.node.Name); err != nil && followCtx.Err() == nil {
+			logf(opts, "  [%s] journal stream ended: %v", r.node.Name, err)
+		}
+	}()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			logf(opts, "  [%s] journal stream is still closing", r.node.Name)
+		}
+	}
 }
 
 // waitFor polls cond until it returns true or the deadline passes.

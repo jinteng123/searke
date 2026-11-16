@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -171,22 +172,41 @@ func mergeRemoteSans(ex Executor, sans []string) error {
 // re-established, which is what protects quorum before the next
 // server's restart in a rolling operation.
 func waitServerReady(ex Executor, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	return waitServerReadyContext(context.Background(), ex, timeout, nil)
+}
+
+func waitServerReadyContext(ctx context.Context, ex Executor, timeout time.Duration, progress func(string)) error {
+	started := time.Now()
+	deadline := started.Add(timeout)
+	lastReport := time.Time{}
 	active := false
 	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		state := "waiting for rke2-server service"
 		if !active {
 			if r, _ := ex.RunSudo("systemctl is-active rke2-server"); r != nil && strings.TrimSpace(r.Stdout) == "active" {
 				active = true
+				state = "service active; waiting for API /readyz"
 			}
 		} else {
 			res, err := ex.RunSudo(fmt.Sprintf(
-				"%s --kubeconfig %s --request-timeout=10s get --raw=/readyz",
+				"%s --kubeconfig %s --request-timeout=8s get --raw=/readyz",
 				kubectlPath, kubeconfigPath))
 			if err == nil && res.ExitCode == 0 && strings.Contains(res.Stdout, "ok") {
 				return nil
 			}
 		}
-		time.Sleep(3 * time.Second)
+		if progress != nil && time.Since(lastReport) >= 5*time.Second {
+			progress(fmt.Sprintf("%s (elapsed %s)", state, time.Since(started).Round(time.Second)))
+			lastReport = time.Now()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
 	}
 	return fmt.Errorf("rke2-server did not come back ready within %s", timeout)
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -51,6 +52,13 @@ func ParseSource(s string, insecure bool) (Source, error) {
 // OpenIndex resolves the source to an image index. When a tar file is
 // used it is unpacked to a temp dir; the returned cleanup removes it.
 func (s Source) OpenIndex() (v1.ImageIndex, func(), error) {
+	return s.OpenIndexProgress(nil)
+}
+
+// OpenIndexProgress is OpenIndex with byte progress for a local OCI archive.
+// Registry references and pre-expanded OCI layout directories have no archive
+// extraction step and therefore don't call progress.
+func (s Source) OpenIndexProgress(progress func(read, total int64)) (v1.ImageIndex, func(), error) {
 	cleanup := func() {}
 	if s.Ref != "" {
 		ref, err := parseRef(s.Ref, s.Insecure)
@@ -70,7 +78,7 @@ func (s Source) OpenIndex() (v1.ImageIndex, func(), error) {
 		if err != nil {
 			return nil, cleanup, err
 		}
-		if err := Untar(path, tmp); err != nil {
+		if err := UntarProgress(path, tmp, progress); err != nil {
 			os.RemoveAll(tmp)
 			return nil, cleanup, fmt.Errorf("unpack %s: %w", path, err)
 		}
@@ -115,6 +123,14 @@ func IndexMeta(ii v1.ImageIndex) (*Meta, error) {
 // into destDir, preserving the /opt/searke/... layout. The payload is
 // verified against the embedded sha256sum manifest before returning.
 func ExtractPayload(ii v1.ImageIndex, p bundle.Platform, destDir string) error {
+	return ExtractPayloadProgress(ii, p, destDir, nil)
+}
+
+// ExtractPayloadProgress extracts one platform image and reports bytes read
+// from each uncompressed OCI layer. Total uncompressed size is intentionally
+// left unknown to avoid decompressing every layer once just to estimate it.
+func ExtractPayloadProgress(ii v1.ImageIndex, p bundle.Platform, destDir string,
+	progress func(layer int, bytesRead int64)) error {
 	im, err := ii.IndexManifest()
 	if err != nil {
 		return err
@@ -143,18 +159,47 @@ func ExtractPayload(ii v1.ImageIndex, p bundle.Platform, destDir string) error {
 	if err != nil {
 		return err
 	}
-	for _, l := range layers {
+	for i, l := range layers {
 		rc, err := l.Uncompressed()
 		if err != nil {
 			return err
 		}
-		if err := untarInto(rc, destDir); err != nil {
+		reader := &layerProgressReader{reader: rc, layer: i + 1, progress: progress}
+		if err := untarInto(reader, destDir); err != nil {
 			rc.Close()
 			return err
 		}
+		reader.reportNow()
 		rc.Close()
 	}
 	return nil
+}
+
+type layerProgressReader struct {
+	reader   io.Reader
+	layer    int
+	read     int64
+	lastRead int64
+	lastAt   time.Time
+	progress func(layer int, bytesRead int64)
+}
+
+func (r *layerProgressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += int64(n)
+	if r.progress != nil && (time.Since(r.lastAt) >= time.Second || err == io.EOF) && r.read != r.lastRead {
+		r.reportNow()
+	}
+	return n, err
+}
+
+func (r *layerProgressReader) reportNow() {
+	if r.progress == nil || r.read == r.lastRead {
+		return
+	}
+	r.progress(r.layer, r.read)
+	r.lastRead = r.read
+	r.lastAt = time.Now()
 }
 
 // untarInto extracts a tar stream under destDir, stripping the leading
@@ -385,18 +430,29 @@ func TarDir(srcDir, outPath string) error {
 
 // Untar extracts a (optionally gzipped) tar file into destDir.
 func Untar(tarPath, destDir string) error {
+	return UntarProgress(tarPath, destDir, nil)
+}
+
+// UntarProgress extracts a local OCI archive and reports bytes consumed from
+// the archive. For gzip archives this counts compressed bytes on disk.
+func UntarProgress(tarPath, destDir string, progress func(read, total int64)) error {
 	f, err := os.Open(tarPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	var r io.Reader = f
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	archiveReader := &archiveProgressReader{reader: f, total: info.Size(), progress: progress}
+	var r io.Reader = archiveReader
 	br, err := peekGzip(f)
 	if err != nil {
 		return err
 	}
 	if br {
-		gz, err := gzip.NewReader(f)
+		gz, err := gzip.NewReader(archiveReader)
 		if err != nil {
 			return err
 		}
@@ -407,6 +463,26 @@ func Untar(tarPath, destDir string) error {
 		return err
 	}
 	return untarInto(r, destDir)
+}
+
+type archiveProgressReader struct {
+	reader   io.Reader
+	total    int64
+	read     int64
+	lastRead int64
+	lastAt   time.Time
+	progress func(read, total int64)
+}
+
+func (r *archiveProgressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += int64(n)
+	if r.progress != nil && (time.Since(r.lastAt) >= time.Second || err == io.EOF) && r.read != r.lastRead {
+		r.progress(r.read, r.total)
+		r.lastRead = r.read
+		r.lastAt = time.Now()
+	}
+	return n, err
 }
 
 func peekGzip(f *os.File) (bool, error) {

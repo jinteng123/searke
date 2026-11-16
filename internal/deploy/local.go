@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -68,6 +69,39 @@ func (l *LocalExecutor) RunStdin(cmd string, stdin []byte) (*Result, error) {
 	return l.run(cmd, true, stdin)
 }
 
+// RunSudoStreamContext runs a local privileged command and forwards output
+// as it is written instead of buffering it until exit.
+func (l *LocalExecutor) RunSudoStreamContext(ctx context.Context, cmd string, stdout, stderr io.Writer) (*Result, error) {
+	name, args := "sh", []string{"-c", cmd}
+	if l.useSudo() {
+		name, args = "sudo", append([]string{"-n", "sh"}, args...)
+	}
+	c := exec.CommandContext(ctx, name, args...)
+	var outBuf, errBuf bytes.Buffer
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	c.Stdout = io.MultiWriter(&outBuf, stdout)
+	c.Stderr = io.MultiWriter(&errBuf, stderr)
+	err := c.Run()
+	res := &Result{Stdout: outBuf.String(), Stderr: errBuf.String()}
+	if ctx.Err() != nil {
+		return res, ctx.Err()
+	}
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			res.ExitCode = ee.ExitCode()
+			return res, nil
+		}
+		return res, err
+	}
+	return res, nil
+}
+
 func (l *LocalExecutor) run(cmd string, sudo bool, stdin []byte) (*Result, error) {
 	name, args := "sh", []string{"-c", cmd}
 	if sudo && l.useSudo() {
@@ -121,11 +155,17 @@ func (l *LocalExecutor) PrepareStaging() error {
 // configured) it is a plain copy; as a non-root user with sudo it stages
 // in StagingDir and installs as root, the same dance as over SFTP.
 func (l *LocalExecutor) UploadFile(local, remote string, mode os.FileMode) error {
+	return l.UploadFileProgress(local, remote, mode, nil)
+}
+
+// UploadFileProgress copies a local file and reports actual bytes copied.
+func (l *LocalExecutor) UploadFileProgress(local, remote string, mode os.FileMode,
+	progress func(written, total int64)) error {
 	if !l.useSudo() {
-		return copyFile(local, remote, mode)
+		return copyFileProgress(local, remote, mode, progress)
 	}
 	stage := StagingDir + "/" + filepath.Base(remote)
-	if err := copyFile(local, stage, mode); err != nil {
+	if err := copyFileProgress(local, stage, mode, progress); err != nil {
 		return err
 	}
 	res, err := l.RunSudo(fmt.Sprintf("install -D -m %o -o root -g root %s %s && rm -f %s",
@@ -189,14 +229,33 @@ func (l *LocalExecutor) Addr() string { return l.addr }
 // On the same filesystem it hard-links instead of copying — the
 // ~800 MiB payload then costs zero extra I/O on local execution.
 func copyFile(src, dst string, mode os.FileMode) error {
+	return copyFileProgress(src, dst, mode, nil)
+}
+
+func copyFileProgress(src, dst string, mode os.FileMode,
+	progress func(written, total int64)) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	total := info.Size()
+	if progress != nil {
+		progress(0, total)
 	}
 	// Replace any stale target, then try a hard link — a failed link
 	// (cross-device) just falls through to the copy below.
 	os.Remove(dst)
 	if err := os.Link(src, dst); err == nil {
-		return os.Chmod(dst, mode)
+		if err := os.Chmod(dst, mode); err != nil {
+			return err
+		}
+		if progress != nil {
+			progress(total, total)
+		}
+		return nil
 	}
 	in, err := os.Open(src)
 	if err != nil {
@@ -207,13 +266,17 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	_, cpErr := io.Copy(out, in)
+	reader := &progressReader{r: in, total: total, report: progress}
+	_, cpErr := io.Copy(out, reader)
 	clErr := out.Close()
 	if cpErr != nil {
 		return cpErr
 	}
 	if clErr != nil {
 		return clErr
+	}
+	if progress != nil && total == 0 {
+		progress(0, 0)
 	}
 	return os.Chmod(dst, mode)
 }

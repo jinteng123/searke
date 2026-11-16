@@ -138,7 +138,17 @@ func runPlan(file string) error {
 }
 
 func runApply(ctx context.Context, file string) error {
-	return deploy.Apply(ctx, deployOpts(file))
+	c, err := cluster.Load(file)
+	if err != nil {
+		return err
+	}
+	logger, err := newRunLogger(c.Name())
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+	logger.Log("run log: %s", logger.Path())
+	return deploy.Apply(ctx, &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log})
 }
 
 // runSingle implements `searke run`: synthesize a one-node local
@@ -150,12 +160,21 @@ func runSingle(ctx context.Context, ro deploy.RunOptions, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	logf("single-node cluster %q: node %s @ %s", c.Name(), c.Spec.Servers[0].Name, c.RegistrationHost())
-	logf("cluster.yaml: %s (reuse: searke apply|status|snapshot -f %s)", file, file)
-	opts := &deploy.Options{ClusterFile: file, Cluster: c, Log: logf}
 	if dryRun {
+		logf("single-node cluster %q: node %s @ %s", c.Name(), c.Spec.Servers[0].Name, c.RegistrationHost())
+		logf("cluster.yaml: %s (reuse: searke apply|status|snapshot -f %s)", file, file)
+		opts := &deploy.Options{ClusterFile: file, Cluster: c, Log: logf}
 		return deploy.Plan(opts)
 	}
+	logger, err := newRunLogger(c.Name())
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+	logger.Log("run log: %s", logger.Path())
+	logger.Log("single-node cluster %q: node %s @ %s", c.Name(), c.Spec.Servers[0].Name, c.RegistrationHost())
+	logger.Log("cluster.yaml: %s (reuse: searke apply|status|snapshot -f %s)", file, file)
+	opts := &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log}
 	return deploy.Apply(ctx, opts)
 }
 

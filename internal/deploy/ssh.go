@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -131,6 +132,66 @@ func (c *Client) RunStdin(cmd string, stdin []byte) (*Result, error) {
 	return c.run(cmd, true, stdin)
 }
 
+// RunSudoStreamContext runs a privileged remote command while forwarding
+// stdout and stderr as they arrive. Captured copies remain on Result for
+// callers that need to inspect output after the command finishes.
+func (c *Client) RunSudoStreamContext(ctx context.Context, cmd string, stdout, stderr io.Writer) (*Result, error) {
+	if c.cfg.Sudo {
+		cmd = "sudo -n sh -c " + shellQuote(cmd)
+	}
+	sess, err := c.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+
+	var outBuf, errBuf bytes.Buffer
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	sess.Stdout = io.MultiWriter(&outBuf, stdout)
+	sess.Stderr = io.MultiWriter(&errBuf, stderr)
+	if err := sess.Start(cmd); err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- sess.Wait() }()
+
+	finish := func(waitErr error) (*Result, error) {
+		res := &Result{Stdout: outBuf.String(), Stderr: errBuf.String()}
+		if waitErr == nil {
+			return res, nil
+		}
+		var ee *ssh.ExitError
+		if errors.As(waitErr, &ee) {
+			res.ExitCode = ee.ExitStatus()
+			return res, nil
+		}
+		return res, waitErr
+	}
+
+	select {
+	case waitErr := <-done:
+		return finish(waitErr)
+	case <-ctx.Done():
+		// OpenSSH normally terminates the remote command when the session
+		// closes. Signal first so shells with a running child can clean up.
+		_ = sess.Signal(ssh.SIGTERM)
+		_ = sess.Close()
+		select {
+		case <-done:
+			return &Result{Stdout: outBuf.String(), Stderr: errBuf.String()}, ctx.Err()
+		case <-time.After(2 * time.Second):
+			// Don't read the buffers if Wait hasn't returned: its goroutine
+			// may still be receiving final output from the server.
+			return nil, ctx.Err()
+		}
+	}
+}
+
 func (c *Client) run(cmd string, sudo bool, stdin []byte) (*Result, error) {
 	if sudo && c.cfg.Sudo {
 		cmd = "sudo -n sh -c " + shellQuote(cmd)
@@ -191,6 +252,12 @@ func (c *Client) PrepareStaging() error {
 // UploadFile streams a local file to a remote path. With sudo enabled
 // the file is staged in StagingDir then moved into place as root.
 func (c *Client) UploadFile(local, remote string, mode os.FileMode) error {
+	return c.UploadFileProgress(local, remote, mode, nil)
+}
+
+// UploadFileProgress streams a file over SFTP and reports actual bytes sent.
+func (c *Client) UploadFileProgress(local, remote string, mode os.FileMode,
+	progress func(written, total int64)) error {
 	sf, err := sftp.NewClient(c.Client)
 	if err != nil {
 		return fmt.Errorf("sftp: %w", err)
@@ -214,7 +281,13 @@ func (c *Client) UploadFile(local, remote string, mode os.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	if _, err := f.ReadFrom(in); err != nil {
+	info, err := in.Stat()
+	if err != nil {
+		f.Close()
+		return err
+	}
+	reader := &progressReader{r: in, total: info.Size(), report: progress}
+	if _, err := f.ReadFrom(reader); err != nil {
 		f.Close()
 		return err
 	}
