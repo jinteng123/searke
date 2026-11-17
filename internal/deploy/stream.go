@@ -167,6 +167,10 @@ type progressReader struct {
 	report    func(written, total int64)
 }
 
+// Size lets sftp's ReadFrom pick the concurrent-write path: a known
+// remaining length is required for it to pre-compute packet offsets.
+func (r *progressReader) Size() int64 { return r.total }
+
 func (r *progressReader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 	r.written += int64(n)

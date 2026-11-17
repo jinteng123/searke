@@ -125,6 +125,23 @@ func deployOpts(file string) *deploy.Options {
 	return &deploy.Options{ClusterFile: file, Log: logf}
 }
 
+// loggedDeployOpts mirrors output into ~/.searke/logs/<cluster>/ for
+// mutating operations, so a failed or interrupted run leaves a trail.
+// The returned function closes the log file.
+func loggedDeployOpts(file string) (*deploy.Options, func(), error) {
+	c, err := cluster.Load(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	logger, err := newRunLogger(c.Name())
+	if err != nil {
+		return nil, nil, err
+	}
+	logger.Log("run log: %s", logger.Path())
+	return &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log},
+		func() { _ = logger.Close() }, nil
+}
+
 func runValidate(file string) error {
 	if err := deploy.Validate(deployOpts(file)); err != nil {
 		return err
@@ -231,14 +248,24 @@ func runKubeconfig(file, outDir string) error {
 }
 
 func runUpgrade(ctx context.Context, file string, skipDrain, skipSnapshot bool) error {
-	return deploy.Upgrade(ctx, deployOpts(file), deploy.UpgradeOptions{
+	opts, done, err := loggedDeployOpts(file)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return deploy.Upgrade(ctx, opts, deploy.UpgradeOptions{
 		SkipDrain:    skipDrain,
 		SkipSnapshot: skipSnapshot,
 	})
 }
 
 func runSnapshotSave(file, name string) error {
-	return deploy.SnapshotSave(deployOpts(file), name)
+	opts, done, err := loggedDeployOpts(file)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return deploy.SnapshotSave(opts, name)
 }
 
 func runSnapshotList(file string) error {
@@ -250,15 +277,30 @@ func runSnapshotPull(file, name, outDir string) error {
 }
 
 func runSnapshotRestore(file, name string, yes bool) error {
-	return deploy.SnapshotRestore(deployOpts(file), name, yes)
+	opts, done, err := loggedDeployOpts(file)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return deploy.SnapshotRestore(opts, name, yes)
 }
 
 func runUninstall(ctx context.Context, file string, yes, ignoreUnreachable bool) error {
-	return deploy.Uninstall(ctx, deployOpts(file), yes, ignoreUnreachable)
+	opts, done, err := loggedDeployOpts(file)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return deploy.Uninstall(ctx, opts, yes, ignoreUnreachable)
 }
 
 func runAdd(ctx context.Context, file string, add *deploy.AddOptions) error {
-	return deploy.Add(ctx, deployOpts(file), add)
+	opts, done, err := loggedDeployOpts(file)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return deploy.Add(ctx, opts, add)
 }
 
 func runLogin(ctx context.Context, registry, user, pass string, insecure bool) error {
@@ -286,7 +328,12 @@ func runLogout(registry string) error {
 }
 
 func runDelete(ctx context.Context, file string, del deploy.DeleteOptions) error {
-	return deploy.Delete(ctx, deployOpts(file), del)
+	opts, done, err := loggedDeployOpts(file)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return deploy.Delete(ctx, opts, del)
 }
 
 func runCertCheck(file, nodesCSV string) error {
@@ -298,17 +345,19 @@ func runCertCheck(file, nodesCSV string) error {
 }
 
 func runCertSan(file, nodesCSV string, sans []string, yes bool) error {
-	c, err := loadCluster(file)
+	opts, done, err := loggedDeployOpts(file)
 	if err != nil {
 		return err
 	}
-	return deploy.CertSan(c, deploy.ParseNodeSelectors(nodesCSV), sans, deployOpts(file), yes)
+	defer done()
+	return deploy.CertSan(opts.Cluster, deploy.ParseNodeSelectors(nodesCSV), sans, opts, yes)
 }
 
 func runCertRotate(file, nodesCSV string, yes bool) error {
-	c, err := loadCluster(file)
+	opts, done, err := loggedDeployOpts(file)
 	if err != nil {
 		return err
 	}
-	return deploy.CertRotate(c, deploy.ParseNodeSelectors(nodesCSV), deployOpts(file), yes)
+	defer done()
+	return deploy.CertRotate(opts.Cluster, deploy.ParseNodeSelectors(nodesCSV), opts, yes)
 }

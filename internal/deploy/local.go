@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"syscall"
+	"time"
 )
 
 // Executor carries out commands and file transfers on one node, either
@@ -77,6 +79,19 @@ func (l *LocalExecutor) RunSudoStreamContext(ctx context.Context, cmd string, st
 		name, args = "sudo", append([]string{"-n", "sh"}, args...)
 	}
 	c := exec.CommandContext(ctx, name, args...)
+	// CommandContext kills the process on cancellation, but SIGKILL sent
+	// to sudo cannot be relayed to the privileged child — the child (and
+	// its pipes) would survive, so Run() could block forever on journalctl
+	// or leave install.sh orphaned after Ctrl-C. Signal the wrapper so
+	// sudo forwards SIGTERM to its child, and bound the wait so a stuck
+	// pipeline still returns promptly.
+	c.Cancel = func() error {
+		if c.Process == nil {
+			return os.ErrProcessDone
+		}
+		return c.Process.Signal(syscall.SIGTERM)
+	}
+	c.WaitDelay = 3 * time.Second
 	var outBuf, errBuf bytes.Buffer
 	if stdout == nil {
 		stdout = io.Discard

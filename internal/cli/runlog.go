@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,20 @@ func newRunLogger(clusterName string) (*runLogger, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create run log: %w", err)
 	}
+	pruneRunLogs(dir, 10)
 	return &runLogger{file: f, path: path}, nil
+}
+
+// pruneRunLogs keeps the newest `keep` logs; names sort chronologically.
+func pruneRunLogs(dir string, keep int) {
+	matches, err := filepath.Glob(filepath.Join(dir, "apply-*.log"))
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, p := range matches[:len(matches)-keep] {
+		os.Remove(p)
+	}
 }
 
 func safeLogComponent(s string) string {

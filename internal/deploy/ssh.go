@@ -136,6 +136,7 @@ func (c *Client) RunStdin(cmd string, stdin []byte) (*Result, error) {
 // stdout and stderr as they arrive. Captured copies remain on Result for
 // callers that need to inspect output after the command finishes.
 func (c *Client) RunSudoStreamContext(ctx context.Context, cmd string, stdout, stderr io.Writer) (*Result, error) {
+	match := cmd // verbatim command text for a best-effort pkill on cancel
 	if c.cfg.Sudo {
 		cmd = "sudo -n sh -c " + shellQuote(cmd)
 	}
@@ -177,10 +178,17 @@ func (c *Client) RunSudoStreamContext(ctx context.Context, cmd string, stdout, s
 	case waitErr := <-done:
 		return finish(waitErr)
 	case <-ctx.Done():
-		// OpenSSH normally terminates the remote command when the session
-		// closes. Signal first so shells with a running child can clean up.
 		_ = sess.Signal(ssh.SIGTERM)
 		_ = sess.Close()
+		select {
+		case <-done:
+			return &Result{Stdout: outBuf.String(), Stderr: errBuf.String()}, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		// Without a PTY, sshd does not kill the remote command when the
+		// channel closes — install.sh could keep running after Ctrl-C and
+		// collide with a rerun. Best effort: pkill the exact command line.
+		c.terminateRemote(match)
 		select {
 		case <-done:
 			return &Result{Stdout: outBuf.String(), Stderr: errBuf.String()}, ctx.Err()
@@ -190,6 +198,23 @@ func (c *Client) RunSudoStreamContext(ctx context.Context, cmd string, stdout, s
 			return nil, ctx.Err()
 		}
 	}
+}
+
+// terminateRemote best-effort kills a remote command started through
+// RunSudoStreamContext. The pattern is the exact command text, which is
+// present verbatim in the remote `sh -c` process arguments; pkill never
+// matches itself. Missing pkill on the node is tolerated.
+func (c *Client) terminateRemote(match string) {
+	sess, err := c.NewSession()
+	if err != nil {
+		return
+	}
+	defer sess.Close()
+	kill := "pkill -TERM -f -- " + shellQuote(match)
+	if c.cfg.Sudo {
+		kill = "sudo -n " + kill
+	}
+	_ = sess.Run(kill)
 }
 
 func (c *Client) run(cmd string, sudo bool, stdin []byte) (*Result, error) {
@@ -258,7 +283,7 @@ func (c *Client) UploadFile(local, remote string, mode os.FileMode) error {
 // UploadFileProgress streams a file over SFTP and reports actual bytes sent.
 func (c *Client) UploadFileProgress(local, remote string, mode os.FileMode,
 	progress func(written, total int64)) error {
-	sf, err := sftp.NewClient(c.Client)
+	sf, err := sftp.NewClient(c.Client, sftp.UseConcurrentWrites(true))
 	if err != nil {
 		return fmt.Errorf("sftp: %w", err)
 	}

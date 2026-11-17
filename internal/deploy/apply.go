@@ -517,11 +517,18 @@ func uploadPayloadFile(r *nodeRuntime, local, remote string, mode os.FileMode, o
 			}
 		}
 	}()
+	lastLog := time.Time{}
 	progress := func(written, size int64) {
 		transferred.Store(written)
 		if size == 0 {
 			return
 		}
+		// Log at most every 5s mid-flight so a slow link doesn't bury the
+		// run log; the final "uploaded" line below reports completion.
+		if written != size && time.Since(lastLog) < 5*time.Second {
+			return
+		}
+		lastLog = time.Now()
 		pct := float64(written) * 100 / float64(size)
 		elapsed := time.Since(started).Seconds()
 		if elapsed < 0.5 {
