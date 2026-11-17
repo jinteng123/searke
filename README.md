@@ -144,6 +144,9 @@ searke apply    -f cluster.yaml   # 开始安装
 searke kubeconfig -f cluster.yaml -o ~/.kube
 export KUBECONFIG=~/.kube/my-cluster-kubeconfig
 kubectl get nodes
+
+# apiAddress 或 bootstrap server 宕机时，从任意存活 server 拉取并把入口写成它：
+searke kubeconfig -f cluster.yaml --server 10.0.0.12
 ```
 
 ---

@@ -238,12 +238,12 @@ func runHostname(file, nodesCSV, name string, force bool) error {
 	return deploy.SetHostname(c, deploy.ParseNodeSelectors(nodesCSV), name, force, logf)
 }
 
-func runKubeconfig(file, outDir string) error {
+func runKubeconfig(file, outDir, server string) error {
 	c, err := loadCluster(file)
 	if err != nil {
 		return err
 	}
-	_, err = deploy.FetchKubeconfig(c, outDir, logf)
+	_, err = deploy.FetchKubeconfig(c, outDir, server, logf)
 	return err
 }
 

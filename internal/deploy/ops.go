@@ -283,11 +283,27 @@ func SetHostname(c *cluster.Cluster, names []string, hostname string,
 // server, rewrites the apiserver URL to the server address, and writes
 // it to outDir/<cluster>-kubeconfig with mode 0600. It is never
 // printed to stdout: the file contains cluster-admin credentials.
-func FetchKubeconfig(c *cluster.Cluster, outDir string, log func(string, ...any)) (string, error) {
-	first := c.FirstServer()
-	ex, err := Connect(first.Address, sshConfig(c))
+func FetchKubeconfig(c *cluster.Cluster, outDir, serverOverride string, log func(string, ...any)) (string, error) {
+	// serverOverride picks the apiserver endpoint written into the file
+	// and the node it is fetched from — useful when the node named by
+	// apiAddress (or the bootstrap server) is down. The override's TLS
+	// name is covered because RKE2 includes every node IP in the serving
+	// cert, not just the declared endpoint.
+	fetchAddr := c.FirstServer().Address
+	fetchName := c.FirstServer().Name
+	if serverOverride != "" {
+		fetchAddr = serverOverride
+		fetchName = serverOverride
+		for _, n := range append(append([]cluster.Node{}, c.Spec.Servers...), c.Spec.Agents...) {
+			if n.Address == serverOverride {
+				fetchAddr, fetchName = n.Address, n.Name
+				break
+			}
+		}
+	}
+	ex, err := Connect(fetchAddr, sshConfig(c))
 	if err != nil {
-		return "", fmt.Errorf("connect %s: %w", first.Name, err)
+		return "", fmt.Errorf("connect %s: %w", fetchName, err)
 	}
 	defer ex.Close()
 
@@ -308,14 +324,22 @@ func FetchKubeconfig(c *cluster.Cluster, outDir string, log func(string, ...any)
 	// reaching the API from outside need a reachable address. Prefer
 	// the declared apiAddress (VIP/LB) — it is the SAN the serving
 	// cert carries — and fall back to the first server's own address.
-	host := first.Address
+	host := c.FirstServer().Address
 	if h := apiHost(c); h != "" {
 		if ip := net.ParseIP(h); ip == nil || !ip.IsLoopback() {
 			host = h
 		}
 	}
+	port := "6443"
+	if serverOverride != "" {
+		if h, p, err := net.SplitHostPort(serverOverride); err == nil {
+			host, port = h, p
+		} else {
+			host = serverOverride
+		}
+	}
 	content := strings.ReplaceAll(string(raw), "https://127.0.0.1:6443",
-		"https://"+net.JoinHostPort(host, "6443"))
+		"https://"+net.JoinHostPort(host, port))
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return "", err
 	}

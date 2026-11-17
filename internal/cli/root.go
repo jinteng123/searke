@@ -390,16 +390,18 @@ func newOpsCmds(file *string) []*cobra.Command {
 	nodeFlag(hostsSync)
 	hosts.AddCommand(hostsSync)
 
-	var kubeDir string
+	var kubeDir, kubeServer string
 	kubeconfig := &cobra.Command{
 		Use:   "kubeconfig",
 		Short: "Fetch the admin kubeconfig to <dir>/<cluster>-kubeconfig (mode 0600)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runKubeconfig(*file, kubeDir)
+			return runKubeconfig(*file, kubeDir, kubeServer)
 		},
 	}
 	kubeconfig.Flags().StringVarP(&kubeDir, "output-dir", "o", ".", "destination directory")
+	kubeconfig.Flags().StringVar(&kubeServer, "server", "",
+		"apiserver endpoint host[:port] written into the kubeconfig; also used as the SSH source node (use when apiAddress or the bootstrap server is down)")
 
 	cmds := []*cobra.Command{execCmd, scp, hosts, hostname, kubeconfig, newCertCmds(file, &nodesCSV)}
 	for _, c := range cmds {
