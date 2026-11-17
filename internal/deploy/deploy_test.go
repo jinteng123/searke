@@ -22,7 +22,7 @@ func testCluster() *cluster.Cluster {
 
 func TestRenderConfigFirstServer(t *testing.T) {
 	c := testCluster()
-	out, err := renderConfig(c, c.Spec.Servers[0], "server", c.RegistrationURL(), "", true)
+	out, err := renderConfig(c, c.Spec.Servers[0], "server", c.RegistrationURL(), "", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestRenderConfigFirstServer(t *testing.T) {
 func TestRenderConfigJoinNode(t *testing.T) {
 	c := testCluster()
 	n := cluster.Node{Name: "w1", Address: "10.0.0.21", Labels: map[string]string{"role": "gpu"}}
-	out, err := renderConfig(c, n, "agent", c.RegistrationURL(), "SECRETOKEN", false)
+	out, err := renderConfig(c, n, "agent", c.RegistrationURL(), "SECRETOKEN", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestRenderConfigMerges(t *testing.T) {
 		"node-labels": []any{"zone=a"},
 	}
 	n := cluster.Node{Name: "m1", Address: "10.0.0.11", Labels: map[string]string{"role": "cp"}}
-	out, err := renderConfig(c, n, "server", c.RegistrationURL(), "", true)
+	out, err := renderConfig(c, n, "server", c.RegistrationURL(), "", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,16 +101,53 @@ func TestCheckSnapshotName(t *testing.T) {
 	}
 }
 
-func TestCgroupV2Required(t *testing.T) {
+func TestCgroupV1NeedsOverride(t *testing.T) {
 	for v, want := range map[string]bool{
-		"v1.31.13+rke2r1": false,
-		"v1.32.1+rke2r1":  true,
+		"v1.31.14+rke2r1": false,
+		"v1.34.2+rke2r1":  false,
+		"v1.35.0+rke2r1":  true,
 		"v1.36.5+rke2r1":  true,
 		"bogus":           false,
 	} {
-		if got := cgroupV2Required(v); got != want {
+		if got := cgroupV1NeedsOverride(v); got != want {
 			t.Errorf("%s: got %v want %v", v, got, want)
 		}
+	}
+}
+
+func TestRenderConfigCgroupV1(t *testing.T) {
+	c := testCluster()
+	c.Spec.RKE2Config["kubelet-arg"] = []any{"max-pods=200"}
+	out, err := renderConfig(c, c.Spec.Servers[0], "server", c.RegistrationURL(), "", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !contains(s, "max-pods=200") || !contains(s, "fail-cgroupv1=false") {
+		t.Errorf("cgroup v1 node must keep user args and add fail-cgroupv1=false:\n%s", s)
+	}
+	if out, _ := renderConfig(c, c.Spec.Servers[0], "server", c.RegistrationURL(), "", true, false); contains(string(out), "fail-cgroupv1") {
+		t.Errorf("cgroup v2 node must not get fail-cgroupv1:\n%s", out)
+	}
+	c.Spec.RKE2Config["kubelet-arg"] = "--fail-cgroupv1=false"
+	out, _ = renderConfig(c, c.Spec.Servers[0], "server", c.RegistrationURL(), "", true, true)
+	if strings.Count(string(out), "fail-cgroupv1") != 1 {
+		t.Errorf("user-pinned fail-cgroupv1 must not be duplicated:\n%s", out)
+	}
+}
+
+func TestCheckCgroupV1(t *testing.T) {
+	c := testCluster()
+	v1 := []*nodeRuntime{{node: c.Spec.Servers[0], report: &PreflightReport{CgroupV2: false}}}
+	opts := &Options{Log: func(string, ...any) {}}
+	for _, v := range []string{"v1.31.14+rke2r1", "v1.34.2+rke2r1", "v1.36.5+rke2r1"} {
+		if err := checkCgroupV1(c, v1, v, opts); err != nil {
+			t.Errorf("%s on cgroup v1 must be allowed: %v", v, err)
+		}
+	}
+	c.Spec.RKE2Config["kubelet-arg"] = []any{"fail-cgroupv1=true"}
+	if err := checkCgroupV1(c, v1, "v1.36.5+rke2r1", opts); err == nil {
+		t.Error("explicit fail-cgroupv1=true on a cgroup v1 node must be refused")
 	}
 }
 

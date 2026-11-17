@@ -15,35 +15,60 @@ import (
 
 var versionNumRe = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)`)
 
-// cgroupV2Required reports whether the version's kubelet refuses
-// cgroup v1 hosts (Kubernetes removed v1 support in 1.32).
-func cgroupV2Required(version string) bool {
+// cgroupV1NeedsOverride reports whether the version's kubelet refuses
+// cgroup v1 hosts by default: Kubernetes 1.35 flipped failCgroupV1 to
+// true (KEP-5573). Earlier releases run on v1 with only a warning.
+func cgroupV1NeedsOverride(version string) bool {
 	m := versionNumRe.FindStringSubmatch(version)
 	if m == nil {
 		return false
 	}
+	maj, _ := strconv.Atoi(m[1])
 	min, _ := strconv.Atoi(m[2])
-	return min >= 32
+	return maj > 1 || min >= 35
 }
 
-// requireCgroupV2 refuses to touch nodes whose kernel still runs
-// cgroup v1 when the target needs the unified hierarchy — kubelet
-// would exit immediately after install.
-func requireCgroupV2(rts []*nodeRuntime, version string) error {
-	if !cgroupV2Required(version) {
-		return nil
-	}
-	var bad []string
-	for _, r := range rts {
-		if !r.report.CgroupV2 {
-			bad = append(bad, r.node.Name)
+// failCgroupV1Arg is the kubelet flag that keeps cgroup v1 hosts
+// working on Kubernetes >= 1.35. It is not deprecated, unlike most
+// KubeletConfiguration flags, and exists since 1.31.
+const failCgroupV1Arg = "fail-cgroupv1"
+
+// userFailCgroupV1 returns the user's explicit fail-cgroupv1 value from
+// rke2Config kubelet-arg, if any.
+func userFailCgroupV1(c *cluster.Cluster) (string, bool) {
+	for _, a := range toStringSlice(c.Spec.RKE2Config["kubelet-arg"]) {
+		k, v, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if k == failCgroupV1Arg {
+			if v == "" {
+				v = "true"
+			}
+			return v, true
 		}
 	}
-	if len(bad) > 0 {
-		return fmt.Errorf("nodes %s run cgroup v1 but %s requires cgroup v2: "+
-			"boot with systemd.unified_cgroup_hierarchy=1 or stay on RKE2 <= v1.31",
-			strings.Join(bad, ", "), version)
+	return "", false
+}
+
+// checkCgroupV1 keeps cgroup v1 nodes installable. On targets whose
+// kubelet refuses v1 by default, renderConfig adds fail-cgroupv1=false
+// for those nodes; this only warns, or refuses when the user pinned
+// fail-cgroupv1=true, since kubelet would then crash-loop after install.
+func checkCgroupV1(c *cluster.Cluster, rts []*nodeRuntime, version string, opts *Options) error {
+	var v1 []string
+	for _, r := range rts {
+		if !r.report.CgroupV2 {
+			v1 = append(v1, r.node.Name)
+		}
 	}
+	if len(v1) == 0 || !cgroupV1NeedsOverride(version) {
+		return nil
+	}
+	nodes := strings.Join(v1, ", ")
+	if v, ok := userFailCgroupV1(c); ok && v != "false" {
+		return fmt.Errorf("nodes %s run cgroup v1 but rke2Config kubelet-arg sets %s=%s, so kubelet %s would refuse to start: "+
+			"remove that arg, or boot with systemd.unified_cgroup_hierarchy=1", nodes, failCgroupV1Arg, v, version)
+	}
+	logf(opts, "  warning: nodes %s run cgroup v1; adding kubelet-arg %s=false for %s "+
+		"(cgroup v1 is deprecated upstream; migrate to cgroup v2 before Kubernetes removes it)", nodes, failCgroupV1Arg, version)
 	return nil
 }
 
@@ -119,7 +144,7 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 			logf(opts, "  warning %s: %s", r.node.Name, w)
 		}
 	}
-	if err := requireCgroupV2(rts, target); err != nil {
+	if err := checkCgroupV1(c, rts, target, opts); err != nil {
 		return err
 	}
 
@@ -253,7 +278,8 @@ func upgradeNode(ctx context.Context, c *cluster.Cluster, rb *ResolvedBundle, r 
 	if err := distribute(ctx, c, rb, r, scratch, cache, opts); err != nil {
 		return err
 	}
-	cfg, err := renderConfig(c, r.node, r.role, c.RegistrationURL(), token, isFirst)
+	cfg, err := renderConfig(c, r.node, r.role, c.RegistrationURL(), token, isFirst,
+		!r.report.CgroupV2 && cgroupV1NeedsOverride(target))
 	if err != nil {
 		return err
 	}

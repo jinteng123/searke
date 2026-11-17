@@ -289,7 +289,7 @@ func Apply(ctx context.Context, opts *Options) error {
 		return err
 	}
 	defer closeAll(rts)
-	if err := requireCgroupV2(rts, rb.Meta.Version); err != nil {
+	if err := checkCgroupV1(c, rts, rb.Meta.Version, opts); err != nil {
 		return err
 	}
 	for _, r := range rts {
@@ -549,7 +549,9 @@ func formatBytes(n int64) string {
 }
 
 // renderConfig builds /etc/rancher/rke2/config.yaml content.
-func renderConfig(c *cluster.Cluster, n cluster.Node, role, regURL, token string, isFirst bool) ([]byte, error) {
+// cgroupV1 adds kubelet-arg fail-cgroupv1=false so kubelet >= 1.35 still
+// starts on a cgroup v1 host; an explicit user value is never overridden.
+func renderConfig(c *cluster.Cluster, n cluster.Node, role, regURL, token string, isFirst, cgroupV1 bool) ([]byte, error) {
 	m := map[string]any{}
 	for k, v := range c.Spec.RKE2Config {
 		m[k] = v
@@ -601,6 +603,9 @@ func renderConfig(c *cluster.Cluster, n cluster.Node, role, regURL, token string
 		sort.Strings(labels)
 		m["node-labels"] = labels
 	}
+	if _, pinned := userFailCgroupV1(c); cgroupV1 && !pinned {
+		m["kubelet-arg"] = append(toStringSlice(m["kubelet-arg"]), failCgroupV1Arg+"=false")
+	}
 	return yaml.Marshal(m)
 }
 
@@ -619,6 +624,8 @@ func apiHost(c *cluster.Cluster) string {
 func toStringSlice(v any) []string {
 	var out []string
 	switch t := v.(type) {
+	case string:
+		out = []string{t}
 	case []string:
 		out = t
 	case []any:
@@ -644,7 +651,8 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 	}
 
 	if !st.Done(name, StageConfigured) {
-		cfg, err := renderConfig(c, r.node, r.role, c.RegistrationURL(), token, isFirst)
+		cfg, err := renderConfig(c, r.node, r.role, c.RegistrationURL(), token, isFirst,
+			!r.report.CgroupV2 && cgroupV1NeedsOverride(st.Version))
 		if err != nil {
 			return err
 		}
@@ -664,7 +672,8 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 		// previous interrupted run never reaches this state because
 		// StageConfigured is only marked after token is known) — but
 		// re-render to stay safe on token rotation.
-		cfg, err := renderConfig(c, r.node, r.role, c.RegistrationURL(), token, isFirst)
+		cfg, err := renderConfig(c, r.node, r.role, c.RegistrationURL(), token, isFirst,
+			!r.report.CgroupV2 && cgroupV1NeedsOverride(st.Version))
 		if err != nil {
 			return err
 		}

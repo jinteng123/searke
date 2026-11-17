@@ -89,14 +89,15 @@ func Preflight(c Executor, nodeName string) (*PreflightReport, error) {
 		return nil, fmt.Errorf("%s: SELinux is Enforcing but the tar install carries no SELinux policy: `setenforce 0` (and disable in /etc/selinux/config) or install rke2-selinux first", nodeName)
 	}
 
-	// kubelet on Kubernetes >= 1.32 refuses cgroup v1 outright; older
+	// kubelet on Kubernetes >= 1.35 refuses cgroup v1 by default; older
 	// distros (Kylin V10, CentOS 7, Alinux 2...) still boot with it.
 	// The unified hierarchy is recognised by its controllers file.
 	if r, _ := c.Run("test -f /sys/fs/cgroup/cgroup.controllers"); r != nil && r.ExitCode == 0 {
 		rep.CgroupV2 = true
 	} else {
 		rep.Warnings = append(rep.Warnings,
-			"host runs cgroup v1; RKE2 >= v1.32 requires cgroup v2 (boot with systemd.unified_cgroup_hierarchy=1, or use RKE2 <= v1.31)")
+			"host runs cgroup v1 (deprecated by Kubernetes); for RKE2 >= v1.35 searke adds kubelet-arg fail-cgroupv1=false, "+
+				"but prefer booting with systemd.unified_cgroup_hierarchy=1")
 	}
 
 	// kubelet fails outright when swap is on and no swapBehavior is set.

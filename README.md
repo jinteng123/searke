@@ -280,7 +280,7 @@ searke image serve rke2-oci --address 0.0.0.0:5000
 不支持降级。每次只能升一个小版本，需要跨多个版本时请逐级升级。
 
 **kubelet 崩溃循环、`run cgroup v1` 报错**
-节点内核还是 cgroup v1（麒麟 V10、CentOS 7、Alinux 2 等老系统），而 k8s 1.32+ 的 kubelet 要求 cgroup v2。用 `grubby --update-kernel=ALL --args="systemd.unified_cgroup_hierarchy=1"` 切到 v2 并重启；内核不支持就只能用 RKE2 ≤ v1.31 或换系统镜像。新版 searke 的 `validate`/`apply`/`upgrade` 会提前拦下这类节点。
+节点还在用 cgroup v1（麒麟 V10、CentOS 7、Alinux 2 等），而 Kubernetes 1.35 起 kubelet 默认拒绝在 cgroup v1 上启动（1.34 及以前只告警）。searke 会自动兼容：目标版本 ≥ v1.35 时，给 cgroup v1 节点的 kubelet 加上 `fail-cgroupv1=false`，`apply`/`upgrade` 时打印告警。如果你在 `rke2Config.kubelet-arg` 里显式写了 `fail-cgroupv1=true`，searke 会在安装前报错。cgroup v1 已被上游弃用，长期还是建议切到 v2：`grubby --update-kernel=ALL --args="systemd.unified_cgroup_hierarchy=1"` 后重启。用旧版 searke 装出这个错误的节点，升级 searke 后重跑 `searke apply` 并不会改写已经写好的配置；需要先 `uninstall` 再重新 `run`/`apply`，或者手工在 `/etc/rancher/rke2/config.yaml` 的 `kubelet-arg` 里加 `fail-cgroupv1=false`，然后 `systemctl restart rke2-server`。
 
 **下载很慢**
 设置代理：`export HTTPS_PROXY=http://代理:端口`。使用 `sudo` 运行时，需要写成 `sudo HTTPS_PROXY=... searke ...`。

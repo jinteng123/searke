@@ -318,6 +318,7 @@ spec:
 | 首个 server 已启动但 apply 中断 | 保存阶段记录；重跑先读取远端实际状态，避免重复初始化。 |
 | SSH 密钥或集群 token 泄露 | 镜像不含密钥；token 只经 SSH 传递，不写入普通日志；本地状态文件限制权限。 |
 | RKE2 需要的 OS 依赖不满足 | 首期限定 Ubuntu 22.04 并在 preflight 中检查；不在初版自动替换系统包。 |
+| 节点仍是 cgroup v1（麒麟 V10 等），Kubernetes 1.35 起 kubelet 默认拒绝启动 | preflight 检测 `/sys/fs/cgroup/cgroup.controllers`；目标版本 ≥ v1.35 时只给 cgroup v1 节点渲染 `kubelet-arg: fail-cgroupv1=false`（该开关从 1.31 起存在且未弃用），并打印告警；用户显式设 `fail-cgroupv1=true` 时安装前拒绝。1.34 及以下不注入参数。 |
 
 ## 10. Definition of Done
 
