@@ -149,6 +149,13 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 	}
 
 	first := findRuntime(rts, c.FirstServer().Name)
+	// The token read races a still-starting apiserver; wait for the
+	// bootstrap to actually serve before touching the cluster.
+	if err := waitServerReadyContext(ctx, first.client, 10*time.Minute, func(msg string) {
+		logf(opts, "  [%s] %s", first.node.Name, msg)
+	}); err != nil {
+		return fmt.Errorf("%s: bootstrap server not ready: %w", first.node.Name, err)
+	}
 	token, err := fetchToken(first)
 	if err != nil {
 		return fmt.Errorf("cannot proceed without node token: %w", err)
@@ -221,7 +228,9 @@ func Upgrade(ctx context.Context, opts *Options, uo UpgradeOptions) error {
 			// The bootstrap server must actually serve before the
 			// next node's drain/kubectl calls — service active alone
 			// races ahead of the apiserver.
-			if err := waitServerReady(r.client, 10*time.Minute); err != nil {
+			if err := waitServerReadyContext(ctx, r.client, 10*time.Minute, func(msg string) {
+				logf(opts, "  [%s] %s", r.node.Name, msg)
+			}); err != nil {
 				return fmt.Errorf("%s: rke2-server did not come back: %w", r.node.Name, err)
 			}
 		}
@@ -287,20 +296,31 @@ func upgradeNode(ctx context.Context, c *cluster.Cluster, rb *ResolvedBundle, r 
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	logf(opts, "  %s: rerun install.sh for %s", name, target)
-	res, err := r.client.RunSudo(fmt.Sprintf(
+	res, err := runSudoStreamingWithHeartbeat(ctx, r.client, fmt.Sprintf(
 		"INSTALL_RKE2_ARTIFACT_PATH=%s INSTALL_RKE2_TYPE=%s INSTALL_RKE2_VERSION=%s sh %s",
-		shellQuote(RemoteArtifacts), r.role, shellQuote(target), RemoteRoot+"/install.sh"))
+		shellQuote(RemoteArtifacts), r.role, shellQuote(target), RemoteRoot+"/install.sh"),
+		opts, name, "running install.sh", 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("%s: install.sh: %w", name, err)
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("%s: install.sh failed (exit %d): %s", name, res.ExitCode, tail(res.Stderr+res.Stdout, 800))
+	if res == nil || res.ExitCode != 0 {
+		out := ""
+		if res != nil {
+			out = res.Stderr + res.Stdout
+		}
+		return fmt.Errorf("%s: install.sh failed: %s", name, tail(out, 800))
 	}
 	svc := "rke2-" + r.role
-	if res, err := r.client.RunSudo("systemctl restart " + svc); err != nil {
+	res, err = runSudoStreaming(ctx, r.client, "systemctl restart "+shellQuote(svc), opts, name)
+	if err != nil {
 		return fmt.Errorf("%s: restart %s: %w", name, svc, err)
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("%s: restart %s: %s", name, svc, res.Stderr)
+	}
+	if res == nil || res.ExitCode != 0 {
+		out := ""
+		if res != nil {
+			out = res.Stderr + res.Stdout
+		}
+		return fmt.Errorf("%s: restart %s failed: %s", name, svc, tail(out, 400))
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -389,6 +390,13 @@ func Apply(ctx context.Context, opts *Options) error {
 			return err
 		}
 	}
+	// Convenience, not correctness: put kubectl/crictl/ctr on PATH and a
+	// kubeconfig in the admin's ~/.kube so the node is usable on login.
+	for _, r := range rts {
+		if err := setupNodeCLI(ctx, c, r, opts); err != nil {
+			logf(opts, "  warning %s: CLI setup failed (cluster is still healthy): %v", r.node.Name, err)
+		}
+	}
 	if err := st.Log("apply", "cluster converged: "+fmt.Sprint(len(rts))+" nodes"); err != nil {
 		return err
 	}
@@ -397,6 +405,49 @@ func Apply(ctx context.Context, opts *Options) error {
 	} else {
 		logf(opts, "apply complete. kubeconfig: ssh %s@%s 'sudo cat %s'",
 			c.Spec.SSH.User, first.node.Address, kubeconfigPath)
+	}
+	return nil
+}
+
+// setupNodeCLI makes the freshly installed node convenient to operate:
+// rke2/kubectl/crictl/ctr are symlinked into /usr/local/bin and, on
+// servers, the admin kubeconfig is installed into ~/.kube/config of root
+// and the invoking user ($SUDO_USER — set by sudo on both the local and
+// SSH paths). An existing foreign ~/.kube/config is never overwritten;
+// the file lands as config-<cluster> instead.
+func setupNodeCLI(ctx context.Context, c *cluster.Cluster, r *nodeRuntime, opts *Options) error {
+	cmd := `for b in /var/lib/rancher/rke2/bin /opt/rke2/bin; do
+  if test -d "$b"; then
+    for t in rke2 kubectl crictl ctr; do
+      test -x "$b/$t" && ln -sf "$b/$t" /usr/local/bin/$t
+    done
+  fi
+done
+if test ! -f ` + kubeconfigPath + `; then exit 0; fi
+for u in root $SUDO_USER; do
+  test -n "$u" || continue
+  d=$(eval "echo ~$u" 2>/dev/null) || continue
+  test -d "$d" || continue
+  mkdir -p "$d/.kube" || continue
+  chown "$(id -u "$u")":"$(id -g "$u")" "$d/.kube" 2>/dev/null
+  if test ! -f "$d/.kube/config"; then
+    install -m 600 -o "$(id -u "$u")" -g "$(id -g "$u")" ` + kubeconfigPath + ` "$d/.kube/config" && echo "kubeconfig -> $d/.kube/config"
+  elif cmp -s ` + kubeconfigPath + ` "$d/.kube/config"; then
+    :
+  else
+    install -m 600 -o "$(id -u "$u")" -g "$(id -g "$u")" ` + kubeconfigPath + ` "$d/.kube/config-` + c.Name() + `" && echo "existing ~/.kube/config kept; wrote $d/.kube/config-` + c.Name() + `"
+  fi
+done`
+	res, err := runSudoStreaming(ctx, r.client, cmd, opts, r.node.Name)
+	if err != nil {
+		return err
+	}
+	if res == nil || res.ExitCode != 0 {
+		out := ""
+		if res != nil {
+			out = res.Stderr + res.Stdout
+		}
+		return fmt.Errorf("exit %s", tail(out, 400))
 	}
 	return nil
 }
@@ -517,12 +568,16 @@ func uploadPayloadFile(r *nodeRuntime, local, remote string, mode os.FileMode, o
 			}
 		}
 	}()
+	var progMu sync.Mutex
 	lastLog := time.Time{}
 	progress := func(written, size int64) {
 		transferred.Store(written)
 		if size == 0 {
 			return
 		}
+		// Concurrent SFTP writes can invoke this from several goroutines.
+		progMu.Lock()
+		defer progMu.Unlock()
 		// Log at most every 5s mid-flight so a slow link doesn't bury the
 		// run log; the final "uploaded" line below reports completion.
 		if written != size && time.Since(lastLog) < 5*time.Second {
@@ -625,7 +680,7 @@ func apiHost(c *cluster.Cluster) string {
 	if err != nil {
 		return ""
 	}
-	return host
+	return strings.Trim(host, "[]")
 }
 
 func toStringSlice(v any) []string {
@@ -653,6 +708,46 @@ func convergeNode(ctx context.Context, c *cluster.Cluster, st *State, r *nodeRun
 
 	// Existing foreign installs were already rejected in preflight.
 	if r.report.Service != "" && r.report.ServiceState == "active" {
+		// An active node must still carry the current spec: re-render
+		// config.yaml and, when it drifted, write it back and restart so a
+		// re-run apply actually converges instead of skipping the node.
+		cfg, err := renderConfig(c, r.node, r.role, c.RegistrationURL(), token, isFirst,
+			!r.report.CgroupV2 && cgroupV1NeedsOverride(st.Version))
+		if err != nil {
+			return err
+		}
+		res, err := r.client.RunSudo("cat " + shellQuote(RKE2ConfigPath))
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if res.ExitCode != 0 || res.Stdout != string(cfg) {
+			if !isFirst && token == "" {
+				return fmt.Errorf("%s: config drifted but no node token available to re-render it", name)
+			}
+			logf(opts, "  %s: config drifted, rewriting %s and restarting %s", name, RKE2ConfigPath, r.report.Service)
+			if err := r.client.WriteFile(RKE2ConfigPath, cfg, 0o600); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			svc := "rke2-" + r.role
+			res, err := runSudoStreaming(ctx, r.client, "systemctl restart "+shellQuote(svc), opts, name)
+			if err != nil {
+				return fmt.Errorf("%s: restart %s: %w", name, svc, err)
+			}
+			if res == nil || res.ExitCode != 0 {
+				out := ""
+				if res != nil {
+					out = res.Stderr + res.Stdout
+				}
+				return fmt.Errorf("%s: restart %s failed: %s", name, svc, tail(out, 400))
+			}
+			if r.role == "server" {
+				if err := waitServerReadyContext(ctx, r.client, 10*time.Minute, func(msg string) {
+					logf(opts, "  [%s] %s", name, msg)
+				}); err != nil {
+					return fmt.Errorf("%s: rke2-server did not come back after config rewrite: %w", name, err)
+				}
+			}
+		}
 		logf(opts, "  %s: %s already active, verifying only", name, r.report.Service)
 		return st.Mark(name, r.role, r.report.Arch, StageRunning, "pre-existing active service")
 	}

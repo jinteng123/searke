@@ -290,13 +290,19 @@ func FetchKubeconfig(c *cluster.Cluster, outDir, serverOverride string, log func
 	// apiAddress (or the bootstrap server) is down. The override's TLS
 	// name is covered because RKE2 includes every node IP in the serving
 	// cert, not just the declared endpoint.
+	// Normalize the override once: a host[:port] may be given, but SSH
+	// always needs the bare host while the kubeconfig keeps the API port.
+	overHost, apiPort := "", "6443"
 	fetchAddr := c.FirstServer().Address
 	fetchName := c.FirstServer().Name
 	if serverOverride != "" {
-		fetchAddr = serverOverride
-		fetchName = serverOverride
+		overHost = serverOverride
+		if h, p, err := net.SplitHostPort(serverOverride); err == nil {
+			overHost, apiPort = h, p
+		}
+		fetchAddr, fetchName = overHost, overHost
 		for _, n := range append(append([]cluster.Node{}, c.Spec.Servers...), c.Spec.Agents...) {
-			if n.Address == serverOverride {
+			if n.Address == overHost || n.Name == overHost {
 				fetchAddr, fetchName = n.Address, n.Name
 				break
 			}
@@ -331,16 +337,11 @@ func FetchKubeconfig(c *cluster.Cluster, outDir, serverOverride string, log func
 			host = h
 		}
 	}
-	port := "6443"
-	if serverOverride != "" {
-		if h, p, err := net.SplitHostPort(serverOverride); err == nil {
-			host, port = h, p
-		} else {
-			host = serverOverride
-		}
+	if overHost != "" {
+		host = overHost
 	}
 	content := strings.ReplaceAll(string(raw), "https://127.0.0.1:6443",
-		"https://"+net.JoinHostPort(host, port))
+		"https://"+net.JoinHostPort(host, apiPort))
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return "", err
 	}

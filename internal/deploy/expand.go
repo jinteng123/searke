@@ -59,7 +59,9 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	}
 	nextName := func(prefix string) string {
 		for i := 1; ; i++ {
-			cand := fmt.Sprintf("%s-%d", prefix, i)
+			// Zero-pad like RemoteCluster's server-%02d so lexicographic
+			// order (which picks the bootstrap server) stays predictable.
+			cand := fmt.Sprintf("%s-%02d", prefix, i)
 			if !taken[cand] {
 				taken[cand] = true
 				return cand
@@ -92,7 +94,7 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	var sshUpd *cluster.SSHSpec
 	if add.SSHUser != "" || add.SSHKey != "" || add.SSHPort != 0 || add.SSHPass != "" {
 		// Password stays in memory only — secrets are never persisted to
-		// the descriptor (persist manually via spec.ssh.password if needed).
+		// the descriptor (spec.ssh.password is not even a YAML field).
 		if add.SSHPass != "" {
 			c.Spec.SSH.Password = add.SSHPass
 			logf(opts, "  --password applies to this run only; it is not written to %s", opts.ClusterFile)

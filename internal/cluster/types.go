@@ -19,7 +19,9 @@ const (
 type SSHSpec struct {
 	User         string `yaml:"user" json:"user"`
 	IdentityFile string `yaml:"identityFile,omitempty" json:"identityFile,omitempty"`
-	Password     string `yaml:"password,omitempty" json:"password,omitempty"`
+	// Password is intentionally never serialized: it is populated from
+	// --password at run time and held in memory only.
+	Password string `yaml:"-" json:"-"`
 	Port         int    `yaml:"port,omitempty" json:"port,omitempty"`
 	Sudo         bool   `yaml:"sudo" json:"sudo"`
 }
@@ -213,9 +215,11 @@ func (c *Cluster) RegistrationURL() string {
 }
 
 // RegistrationHost returns only the host part of the registration address.
+// net.SplitHostPort keeps [] around IPv6 literals; TLS SANs and URLs need
+// the bare address, so they are stripped here.
 func (c *Cluster) RegistrationHost() string {
 	host, _, _ := net.SplitHostPort(c.Spec.Endpoints.RegistrationAddress)
-	return host
+	return strings.Trim(host, "[]")
 }
 
 // ExpandPath expands a leading ~/ in paths like identityFile.

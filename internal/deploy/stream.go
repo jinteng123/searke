@@ -159,6 +159,7 @@ func uploadWithProgress(ex Executor, local, remote string, mode os.FileMode,
 // progressReader reports byte progress at most once a second, plus the final
 // byte count. It also works with io.Copy and SFTP's File.ReadFrom.
 type progressReader struct {
+	mu        sync.Mutex
 	r         io.Reader
 	total     int64
 	written   int64
@@ -169,9 +170,17 @@ type progressReader struct {
 
 // Size lets sftp's ReadFrom pick the concurrent-write path: a known
 // remaining length is required for it to pre-compute packet offsets.
-func (r *progressReader) Size() int64 { return r.total }
+func (r *progressReader) Size() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.total - r.written
+}
 
+// Read serializes both the underlying read and the bookkeeping: with
+// concurrent SFTP writes several goroutines may share this reader.
 func (r *progressReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	n, err := r.r.Read(p)
 	r.written += int64(n)
 	if r.report != nil && (time.Since(r.lastAt) >= time.Second || err == io.EOF || r.written == r.total) {

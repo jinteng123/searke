@@ -77,6 +77,7 @@ sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml 
 - 生成的配置保存在 `/root/.searke/<集群名>/cluster.yaml`，之后可以拿它做扩容、升级、备份等操作
 - 中途失败时，再执行一次同样的命令会接着上次的进度继续
 - 机器需要通过代理上网时：`sudo HTTPS_PROXY=http://代理:端口 searke run ...`
+- 安装完成后节点可直接使用 `kubectl`、`crictl`、`ctr`、`rke2`（已链接到 /usr/local/bin）；`rke2.yaml` 会自动放进 root 和执行 sudo 用户的 `~/.kube/config`（已有 config 不会被覆盖，会另存为 `config-<集群名>`）
 - `--dry-run` 只做检查、列出将要执行的步骤，不改动任何东西
 
 ---
