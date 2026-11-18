@@ -413,8 +413,10 @@ func Apply(ctx context.Context, opts *Options) error {
 // rke2/kubectl/crictl/ctr are symlinked into /usr/local/bin and, on
 // servers, the admin kubeconfig is installed into ~/.kube/config of root
 // and the invoking user ($SUDO_USER — set by sudo on both the local and
-// SSH paths). An existing foreign ~/.kube/config is never overwritten;
-// the file lands as config-<cluster> instead.
+// SSH paths). An existing ~/.kube/config pointing at a different API
+// server is never overwritten; the file lands as config-<cluster>
+// instead. A config pointing at the same server (i.e. a stale copy
+// previously installed by searke, e.g. after a reinstall) is replaced.
 func setupNodeCLI(ctx context.Context, c *cluster.Cluster, r *nodeRuntime, opts *Options) error {
 	cmd := `for b in /var/lib/rancher/rke2/bin /opt/rke2/bin; do
   if test -d "$b"; then
@@ -424,6 +426,7 @@ func setupNodeCLI(ctx context.Context, c *cluster.Cluster, r *nodeRuntime, opts 
   fi
 done
 if test ! -f ` + kubeconfigPath + `; then exit 0; fi
+new_srv=$(grep -m1 'server:' ` + kubeconfigPath + ` | awk '{print $2}')
 for u in root $SUDO_USER; do
   test -n "$u" || continue
   d=$(eval "echo ~$u" 2>/dev/null) || continue
@@ -434,6 +437,8 @@ for u in root $SUDO_USER; do
     install -m 600 -o "$(id -u "$u")" -g "$(id -g "$u")" ` + kubeconfigPath + ` "$d/.kube/config" && echo "kubeconfig -> $d/.kube/config"
   elif cmp -s ` + kubeconfigPath + ` "$d/.kube/config"; then
     :
+  elif test "$new_srv" = "$(grep -m1 'server:' "$d/.kube/config" | awk '{print $2}')"; then
+    install -m 600 -o "$(id -u "$u")" -g "$(id -g "$u")" ` + kubeconfigPath + ` "$d/.kube/config" && echo "replaced stale kubeconfig -> $d/.kube/config"
   else
     install -m 600 -o "$(id -u "$u")" -g "$(id -g "$u")" ` + kubeconfigPath + ` "$d/.kube/config-` + c.Name() + `" && echo "existing ~/.kube/config kept; wrote $d/.kube/config-` + c.Name() + `"
   fi
