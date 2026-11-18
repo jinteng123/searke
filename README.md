@@ -64,10 +64,11 @@ searke image inspect registry.cn-hangzhou.aliyuncs.com/searke/rke2:v1.36.5-rke2r
 sudo searke run registry.cn-hangzhou.aliyuncs.com/searke/rke2:v1.36.5-rke2r1
 ```
 
-完成后：
+完成后即可直接使用：
 
 ```bash
-sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes
+kubectl get nodes        # kubeconfig 已自动写入 ~/.kube/config
+crictl ps                # kubectl/crictl/ctr/rke2 已链接到 /usr/local/bin
 ```
 
 说明：
@@ -77,7 +78,7 @@ sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml 
 - 生成的配置保存在 `/root/.searke/<集群名>/cluster.yaml`，之后可以拿它做扩容、升级、备份等操作
 - 中途失败时，再执行一次同样的命令会接着上次的进度继续
 - 机器需要通过代理上网时：`sudo HTTPS_PROXY=http://代理:端口 searke run ...`
-- 安装完成后节点可直接使用 `kubectl`、`crictl`、`ctr`、`rke2`（已链接到 /usr/local/bin）；`rke2.yaml` 会自动放进 root 和执行 sudo 用户的 `~/.kube/config`（已有 config 不会被覆盖，会另存为 `config-<集群名>`）
+- 安装完成后节点可直接使用 `kubectl`、`crictl`、`ctr`、`rke2`（已链接到 /usr/local/bin）；`rke2.yaml` 会自动放进 root 和执行 sudo 用户的 `~/.kube/config`（指向其他集群的已有 config 不会被覆盖，会另存为 `config-<集群名>`；指向本集群的旧 config 视为过期并直接替换）
 - `--dry-run` 只做检查、列出将要执行的步骤，不改动任何东西
 
 ---
@@ -88,7 +89,7 @@ sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml 
 
 每个节点需要满足：
 
-1. 可以用 **SSH 密钥或密码**登录（密码见下文 `--password` / `spec.ssh.password`），登录用户**免密 sudo**，或者直接用 root
+1. 可以用 **SSH 密钥或密码**登录（密码用 `--password`，仅当次生效、不落盘），登录用户**免密 sudo**，或者直接用 root
 2. 运行 searke 的机器上已记录节点的 host key：
 
    ```bash
@@ -109,7 +110,7 @@ searke run registry.cn-hangzhou.aliyuncs.com/searke/rke2:v1.36.5-rke2r1 \
   --ssh-user root --ssh-key ~/.ssh/id_rsa
 ```
 
-cluster.yaml 会自动生成在 `~/.searke/searke/cluster.yaml`（可用 `--name`/`--home` 更改），masters 的第一台会成为引导节点。SSH 密码登录用 `--password`（仅本次生效，不写入文件；要长期保存请在 yaml 里写 `spec.ssh.password`）。`--dry-run` 只生成配置和计划。
+cluster.yaml 会自动生成在 `~/.searke/searke/cluster.yaml`（可用 `--name`/`--home` 更改），masters 的第一台会成为引导节点。SSH 密码登录用 `--password`（仅本次生效，不会写入文件）。`--dry-run` 只生成配置和计划。
 
 ### 4.3 方式二：手工编写 cluster.yaml
 
@@ -157,9 +158,12 @@ searke kubeconfig -f cluster.yaml -o ~/.kube
 export KUBECONFIG=~/.kube/my-cluster-kubeconfig
 kubectl get nodes
 
-# apiAddress 或 bootstrap server 宕机时，从任意存活 server 拉取并把入口写成它：
-searke kubeconfig -f cluster.yaml --server 10.0.0.12
+# apiAddress 或 bootstrap server 宕机时，从任意存活 server 拉取并把入口写成它
+# （可以写 IP、IP:端口 或节点名）：
+searke kubeconfig -f cluster.yaml --server 10.0.0.12:6443
 ```
+
+另外，安装时已自动在每个节点上把 `rke2`/`kubectl`/`crictl`/`ctr` 链接到 `/usr/local/bin`，并在 server 节点为 root 和 SSH 登录用户写好 `~/.kube/config`——登录到节点可以直接 `kubectl`。
 
 ---
 
