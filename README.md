@@ -87,7 +87,7 @@ sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml 
 
 每个节点需要满足：
 
-1. 可以用 **SSH 密钥**登录（不能是密码登录），登录用户**免密 sudo**，或者直接用 root
+1. 可以用 **SSH 密钥或密码**登录（密码见下文 `--password` / `spec.ssh.password`），登录用户**免密 sudo**，或者直接用 root
 2. 运行 searke 的机器上已记录节点的 host key：
 
    ```bash
@@ -99,7 +99,18 @@ sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml 
 
 操作系统：Ubuntu 22.04 / 24.04 已验证，其他 systemd 发行版通常也可以（检查时会给出警告）。
 
-### 4.2 编写 cluster.yaml
+### 4.2 方式一：一条命令生成并安装（类似 `sealos run`）
+
+```bash
+searke run registry.cn-hangzhou.aliyuncs.com/searke/rke2:v1.36.5-rke2r1 \
+  --masters 10.0.0.11,10.0.0.12,10.0.0.13 \
+  --nodes 10.0.0.21,10.0.0.22 \
+  --ssh-user root --ssh-key ~/.ssh/id_rsa
+```
+
+cluster.yaml 会自动生成在 `~/.searke/searke/cluster.yaml`（可用 `--name`/`--home` 更改），masters 的第一台会成为引导节点。SSH 密码登录用 `--password`（仅本次生效，不写入文件；要长期保存请在 yaml 里写 `spec.ssh.password`）。`--dry-run` 只生成配置和计划。
+
+### 4.3 方式二：手工编写 cluster.yaml
 
 可以用 `searke gen cluster -o cluster.yaml` 生成一份带注释的模板，或者参考下面的例子：
 
@@ -126,7 +137,7 @@ spec:
     - { name: worker-1, address: 10.0.0.21 }
 ```
 
-### 4.3 安装
+### 4.4 安装
 
 ```bash
 searke validate -f cluster.yaml   # 检查配置、SSH 连接、节点环境（不做改动）
@@ -138,7 +149,7 @@ searke apply    -f cluster.yaml   # 开始安装
 
 安装时会实时显示制品解包和上传进度、`install.sh` 输出及 RKE2 systemd 日志；等待服务或节点 Ready 时每 5 秒报告一次状态。`run`/`apply`/`upgrade`/`add`/`delete`/`uninstall`/`snapshot`/`cert` 等变更类命令的完整日志保存在 `~/.searke/logs/<集群名>/`（保留最近 10 份），启动时会打印本次日志文件路径。
 
-### 4.4 用 kubectl 访问
+### 4.5 用 kubectl 访问
 
 ```bash
 searke kubeconfig -f cluster.yaml -o ~/.kube
@@ -153,13 +164,13 @@ searke kubeconfig -f cluster.yaml --server 10.0.0.12
 
 ## 5. 日常运维
 
-下面的命令都使用 `-f cluster.yaml` 指定集群。单机安装的集群使用 `/root/.searke/<集群名>/cluster.yaml`。
+下面的命令都使用 `-f cluster.yaml` 指定集群。单机安装的集群使用 `/root/.searke/<集群名>/cluster.yaml`。不写 `-f` 且当前目录没有 cluster.yaml 时，会自动使用 `~/.searke/` 下唯一的生成配置（有多个集群时仍需 `-f` 指定）。
 
 | 要做什么 | 命令 |
 | --- | --- |
 | 查看集群状态 | `searke status -f cluster.yaml` |
-| 增加工作节点 | `searke add -f cluster.yaml --nodes 10.0.0.22,10.0.0.23` |
-| 增加控制平面节点 | `searke add -f cluster.yaml --masters 10.0.0.14,10.0.0.15`（增加后总数仍须是奇数） |
+| 增加工作节点 | `searke add --nodes 10.0.0.22,10.0.0.23`（`-f` 可省略） |
+| 增加控制平面节点 | `searke add --masters 10.0.0.14,10.0.0.15`（增加后总数仍须是奇数） |
 | 删除节点（先预览） | `searke delete -f cluster.yaml --nodes worker-1 --dry-run` |
 | 删除节点 | `searke delete -f cluster.yaml --nodes worker-1 --yes` |
 | 备份 etcd | `searke snapshot save -f cluster.yaml --name before-change` |

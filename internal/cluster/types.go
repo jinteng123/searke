@@ -19,6 +19,7 @@ const (
 type SSHSpec struct {
 	User         string `yaml:"user" json:"user"`
 	IdentityFile string `yaml:"identityFile,omitempty" json:"identityFile,omitempty"`
+	Password     string `yaml:"password,omitempty" json:"password,omitempty"`
 	Port         int    `yaml:"port,omitempty" json:"port,omitempty"`
 	Sudo         bool   `yaml:"sudo" json:"sudo"`
 }

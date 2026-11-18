@@ -27,6 +27,17 @@ type RunOptions struct {
 	ServiceCIDR string // default "10.43.0.0/16"
 	HomeDir     string // generated cluster.yaml + state dir (default ~/.searke/<name>)
 
+	// Sealos-style remote install: when Masters/Nodes are given, `run`
+	// generates a multi-node cluster.yaml and applies it remotely.
+	Masters []string // control-plane addresses; first entry becomes the bootstrap server
+	Nodes   []string // worker addresses
+	Single  bool     // explicit local single-node mode (rejects masters/nodes)
+
+	SSHUser string
+	SSHKey  string
+	SSHPass string // used in memory only; never written to cluster.yaml
+	SSHPort int
+
 	Log func(format string, args ...any) // optional warnings sink
 }
 
@@ -164,4 +175,138 @@ func writeCluster(file string, c *cluster.Cluster) error {
 		return err
 	}
 	return os.WriteFile(file, data, 0o600)
+}
+
+// RemoteCluster builds a multi-node cluster from sealos-style
+// --masters/--nodes flags (the first master becomes the bootstrap
+// server) and persists it as cluster.yaml under HomeDir, the same
+// convention as SingleNodeCluster. A rerun with the same addresses
+// reuses the file; a different node set is rejected in favour of
+// `searke add` / `searke apply -f`.
+func RemoteCluster(ro RunOptions) (*cluster.Cluster, string, error) {
+	if ro.Bundle == "" {
+		return nil, "", fmt.Errorf("bundle is required")
+	}
+	if ro.Single {
+		return nil, "", fmt.Errorf("--single cannot be combined with --masters/--nodes")
+	}
+	if len(ro.Masters) == 0 {
+		return nil, "", fmt.Errorf("--nodes requires --masters")
+	}
+	if ro.Name == "" {
+		ro.Name = "searke"
+	}
+	if ro.HomeDir == "" {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		ro.HomeDir = filepath.Join(h, ".searke", ro.Name)
+	}
+	file := filepath.Join(ro.HomeDir, "cluster.yaml")
+
+	// Bootstrap is the name-sorted first server, so masters[0] gets the
+	// lowest name; zero-padding keeps the order stable beyond 9 nodes.
+	var servers, agents []cluster.Node
+	for i, a := range ro.Masters {
+		servers = append(servers, cluster.Node{Name: fmt.Sprintf("server-%02d", i+1), Address: a})
+	}
+	for i, a := range ro.Nodes {
+		agents = append(agents, cluster.Node{Name: fmt.Sprintf("agent-%02d", i+1), Address: a})
+	}
+	regHost := ro.Address
+	if regHost == "" {
+		regHost = ro.Masters[0]
+	}
+	if ro.CNI == "" {
+		ro.CNI = "canal"
+	}
+	if ro.ClusterCIDR == "" {
+		ro.ClusterCIDR = "10.42.0.0/16"
+	}
+	if ro.ServiceCIDR == "" {
+		ro.ServiceCIDR = "10.43.0.0/16"
+	}
+
+	want := &cluster.Cluster{APIVersion: cluster.APIVersion, Kind: cluster.Kind}
+	want.Metadata.Name = ro.Name
+	want.Spec.RKE2.Bundle = ro.Bundle
+	want.Spec.RKE2.CNI = ro.CNI
+	want.Spec.RKE2.Insecure = ro.Insecure
+	want.Spec.SSH = cluster.SSHSpec{
+		User:         ro.SSHUser,
+		IdentityFile: ro.SSHKey,
+		Port:         ro.SSHPort,
+		Sudo:         true,
+	}
+	want.Spec.Endpoints.RegistrationAddress = net.JoinHostPort(regHost, "9345")
+	want.Spec.Endpoints.APIAddress = net.JoinHostPort(regHost, "6443")
+	want.Spec.Servers = servers
+	want.Spec.Agents = agents
+	want.Spec.RKE2Config = map[string]any{
+		"cluster-cidr": ro.ClusterCIDR,
+		"service-cidr": ro.ServiceCIDR,
+	}
+	if err := want.Validate(); err != nil {
+		return nil, "", fmt.Errorf("generated cluster invalid: %w", err)
+	}
+
+	c := want
+	if _, err := os.Stat(file); err == nil {
+		existing, err := cluster.Load(file)
+		if err != nil {
+			return nil, "", err
+		}
+		if !sameRemoteSpec(existing, want) {
+			return nil, "", fmt.Errorf("%s already exists with a different node set; "+
+				"use `searke add` / `searke apply -f`, or pass --name/--home for a separate cluster", file)
+		}
+		if existing.Spec.RKE2.Bundle != ro.Bundle {
+			existing.Spec.RKE2.Bundle = ro.Bundle
+			if err := writeCluster(file, existing); err != nil {
+				return nil, "", err
+			}
+		}
+		c = existing
+	} else if err := writeCluster(file, want); err != nil {
+		return nil, "", err
+	}
+	// Password is applied to the in-memory cluster only — secrets are
+	// never persisted to the descriptor.
+	c.Spec.SSH.Password = ro.SSHPass
+	return c, file, nil
+}
+
+// sameRemoteSpec compares the parts of a generated spec that a rerun
+// must keep identical; the bundle is allowed to differ (it drives an
+// upgrade on rerun).
+func sameRemoteSpec(got, want *cluster.Cluster) bool {
+	if got.Name() != want.Name() ||
+		got.Spec.RKE2.CNI != want.Spec.RKE2.CNI ||
+		got.Spec.RKE2.Insecure != want.Spec.RKE2.Insecure ||
+		got.Spec.Endpoints != want.Spec.Endpoints ||
+		got.Spec.SSH.User != want.Spec.SSH.User ||
+		got.Spec.SSH.IdentityFile != want.Spec.SSH.IdentityFile ||
+		got.Spec.SSH.Port != want.Spec.SSH.Port ||
+		got.Spec.RKE2Config["cluster-cidr"] != want.Spec.RKE2Config["cluster-cidr"] ||
+		got.Spec.RKE2Config["service-cidr"] != want.Spec.RKE2Config["service-cidr"] {
+		return false
+	}
+	return sameAddrs(got.Spec.Servers, want.Spec.Servers) && sameAddrs(got.Spec.Agents, want.Spec.Agents)
+}
+
+func sameAddrs(a, b []cluster.Node) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, n := range a {
+		seen[n.Address] = true
+	}
+	for _, n := range b {
+		if !seen[n.Address] {
+			return false
+		}
+	}
+	return true
 }

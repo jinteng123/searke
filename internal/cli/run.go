@@ -195,6 +195,32 @@ func runSingle(ctx context.Context, ro deploy.RunOptions, dryRun bool) error {
 	return deploy.Apply(ctx, opts)
 }
 
+// runRemoteCluster implements `searke run <bundle> --masters/--nodes`:
+// generates a multi-node cluster.yaml (sealos-style) then applies it.
+func runRemoteCluster(ctx context.Context, ro deploy.RunOptions, dryRun bool) error {
+	ro.Log = logf
+	c, file, err := deploy.RemoteCluster(ro)
+	if err != nil {
+		return err
+	}
+	msg := fmt.Sprintf("cluster %q: %d servers / %d agents, registration %s",
+		c.Name(), len(c.Spec.Servers), len(c.Spec.Agents), c.Spec.Endpoints.RegistrationAddress)
+	if dryRun {
+		logf("%s", msg)
+		logf("cluster.yaml: %s", file)
+		return deploy.Plan(&deploy.Options{ClusterFile: file, Cluster: c, Log: logf})
+	}
+	logger, err := newRunLogger(c.Name())
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+	logger.Log("run log: %s", logger.Path())
+	logger.Log("%s", msg)
+	logger.Log("cluster.yaml: %s", file)
+	return deploy.Apply(ctx, &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log})
+}
+
 func runStatus(file string) error {
 	return deploy.Status(deployOpts(file))
 }

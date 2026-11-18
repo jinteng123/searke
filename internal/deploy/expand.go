@@ -16,6 +16,7 @@ type AddOptions struct {
 	Agents  []string // additional worker addresses
 	SSHUser string   // fills spec.ssh.user when the descriptor lacks one
 	SSHKey  string   // fills spec.ssh.identityFile
+	SSHPass string   // used for this run only; never written to cluster.yaml
 	SSHPort int      // fills spec.ssh.port
 	DryRun  bool     // show the plan without touching nodes or the file
 }
@@ -89,7 +90,13 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	}
 
 	var sshUpd *cluster.SSHSpec
-	if add.SSHUser != "" || add.SSHKey != "" || add.SSHPort != 0 {
+	if add.SSHUser != "" || add.SSHKey != "" || add.SSHPort != 0 || add.SSHPass != "" {
+		// Password stays in memory only — secrets are never persisted to
+		// the descriptor (persist manually via spec.ssh.password if needed).
+		if add.SSHPass != "" {
+			c.Spec.SSH.Password = add.SSHPass
+			logf(opts, "  --password applies to this run only; it is not written to %s", opts.ClusterFile)
+		}
 		sshUpd = &cluster.SSHSpec{User: add.SSHUser, IdentityFile: add.SSHKey, Port: add.SSHPort}
 		conflict := func(flag, old, val string) {
 			if old != "" && old != val {

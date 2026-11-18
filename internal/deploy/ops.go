@@ -20,6 +20,7 @@ func sshConfig(c *cluster.Cluster) SSHConfig {
 		User:         c.Spec.SSH.User,
 		Port:         c.Spec.SSH.Port,
 		IdentityFile: c.Spec.SSH.IdentityFile,
+		Password:     c.Spec.SSH.Password,
 		Sudo:         c.Spec.SSH.Sudo,
 	}
 }

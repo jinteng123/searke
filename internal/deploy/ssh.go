@@ -24,6 +24,7 @@ type SSHConfig struct {
 	User         string
 	Port         int
 	IdentityFile string
+	Password     string
 	Sudo         bool
 	Timeout      time.Duration
 }
@@ -75,8 +76,20 @@ func connectSSH(address string, cfg SSHConfig) (*Client, error) {
 			auths = append(auths, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
 		}
 	}
+	if cfg.Password != "" {
+		auths = append(auths,
+			ssh.Password(cfg.Password),
+			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+				ans := make([]string, len(questions))
+				for i := range ans {
+					ans[i] = cfg.Password
+				}
+				return ans, nil
+			}),
+		)
+	}
 	if len(auths) == 0 {
-		return nil, fmt.Errorf("no SSH credentials: set spec.ssh.identityFile or run ssh-agent")
+		return nil, fmt.Errorf("no SSH credentials: set spec.ssh.identityFile / spec.ssh.password, pass --ssh-key/--password, or run ssh-agent")
 	}
 
 	khPath := cluster.ExpandPath("~/.ssh/known_hosts")

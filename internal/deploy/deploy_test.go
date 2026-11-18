@@ -415,3 +415,43 @@ func TestLocalExecutorFiles(t *testing.T) {
 		t.Fatalf("downloaded = %q", data)
 	}
 }
+
+func TestRemoteCluster(t *testing.T) {
+	dir := t.TempDir()
+	ro := RunOptions{
+		Bundle:  "bundle-x",
+		Name:    "rc",
+		HomeDir: dir,
+		Masters: []string{"10.0.0.11", "10.0.0.12", "10.0.0.13"},
+		Nodes:   []string{"10.0.0.21"},
+		SSHUser: "root",
+		SSHPass: "secret",
+	}
+	c, file, err := RemoteCluster(ro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FirstServer().Name != "server-01" || c.FirstServer().Address != "10.0.0.11" {
+		t.Errorf("bootstrap must be the first master: %+v", c.FirstServer())
+	}
+	if c.Spec.Endpoints.RegistrationAddress != "10.0.0.11:9345" {
+		t.Errorf("registration: %s", c.Spec.Endpoints.RegistrationAddress)
+	}
+	data, _ := os.ReadFile(file)
+	if strings.Contains(string(data), "secret") {
+		t.Error("password must never be persisted to cluster.yaml")
+	}
+	// Same rerun reuses the file; the password still reaches the executor.
+	c2, _, err := RemoteCluster(ro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.Spec.SSH.Password != "secret" {
+		t.Error("password must reach the in-memory cluster")
+	}
+	// A different node set must be refused.
+	ro.Masters = append(ro.Masters, "10.0.0.14", "10.0.0.15")
+	if _, _, err := RemoteCluster(ro); err == nil {
+		t.Error("different node set on existing file must be refused")
+	}
+}
