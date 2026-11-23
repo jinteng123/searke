@@ -189,6 +189,12 @@ searke kubeconfig -f cluster.yaml --server 10.0.0.12:6443
 
 `add` 和 `delete` 也可以写成 `--servers` 和 `--agents`。`delete` 删除的节点可以写节点名，也可以写 IP。
 
+`add` 的行为：
+
+- 只连接本次新增的节点和引导 server，不会去连其他已有节点
+- `--password` 只用于本次新增的节点，每台节点可以用各自的密码一台台添加
+- 新增的工作节点以**机器的主机名**作为节点名（主机名不合法或与已有节点重名时退回 `agent-NN`）；新增的控制平面节点仍使用 `server-NN`，避免名字排序改变引导节点
+
 ### 升级 RKE2
 
 1. 把 `cluster.yaml` 里的 `spec.rke2.bundle` 改成新版本的安装包

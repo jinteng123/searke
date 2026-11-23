@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/jint/searke/internal/cluster"
@@ -90,7 +91,6 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	if len(addServers)+len(addAgents) == 0 {
 		return fmt.Errorf("all requested addresses are already cluster members")
 	}
-
 	var sshUpd *cluster.SSHSpec
 	if add.SSHUser != "" || add.SSHKey != "" || add.SSHPort != 0 || add.SSHPass != "" {
 		// The password authenticates the NEW nodes only, in memory; it is
@@ -121,6 +121,11 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 			c.Spec.SSH.Port = add.SSHPort
 		}
 	}
+	// Agents take their real hostname as the node name — kubectl then
+	// shows the machine name instead of a synthetic agent-NN. Added
+	// servers keep generated names: a hostname sorting before the
+	// bootstrap server would flip which node initialises the cluster.
+	nameAgentsByHostname(c, addAgents, taken, opts)
 	c.Spec.Servers = append(c.Spec.Servers, addServers...)
 	c.Spec.Agents = append(c.Spec.Agents, addAgents...)
 	if err := c.Validate(); err != nil {
@@ -166,4 +171,40 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 		logf(opts, "added agent %s (%s) to %s", n.Name, n.Address, opts.ClusterFile)
 	}
 	return Apply(ctx, opts)
+}
+
+var rfc1123Name = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
+
+// nameAgentsByHostname replaces the generated agent-NN names with each
+// new node's real hostname. It is best effort: a node that cannot be
+// reached, reports an unusable hostname, or collides with an existing
+// name keeps its generated name (connection errors surface in the
+// preflight that follows).
+func nameAgentsByHostname(c *cluster.Cluster, agents []cluster.Node, taken map[string]bool, opts *Options) {
+	cfg := sshConfig(c)
+	if opts.NodePassword != "" {
+		cfg.Password = opts.NodePassword
+	}
+	for i := range agents {
+		ex, err := Connect(agents[i].Address, cfg)
+		if err != nil {
+			continue
+		}
+		res, err := ex.Run("hostname")
+		ex.Close()
+		if err != nil || res.ExitCode != 0 {
+			continue
+		}
+		host := strings.ToLower(strings.TrimSpace(res.Stdout))
+		switch {
+		case !rfc1123Name.MatchString(host) || host == "localhost":
+			logf(opts, "  %s: hostname %q is not usable as a node name, keeping %s", agents[i].Address, host, agents[i].Name)
+		case taken[host]:
+			logf(opts, "  %s: hostname %q is already a node name in this cluster, keeping %s", agents[i].Address, host, agents[i].Name)
+		default:
+			delete(taken, agents[i].Name)
+			taken[host] = true
+			agents[i].Name = host
+		}
+	}
 }
