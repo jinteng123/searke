@@ -90,11 +90,7 @@ crictl ps                # kubectl/crictl/ctr/rke2 已链接到 /usr/local/bin
 每个节点需要满足：
 
 1. 可以用 **SSH 密钥或密码**登录（密码用 `--password`，仅当次生效、不落盘），登录用户**免密 sudo**，或者直接用 root
-2. 运行 searke 的机器上已记录节点的 host key：
-
-   ```bash
-   ssh-keyscan -t ed25519,rsa,ecdsa 10.0.0.11 10.0.0.12 10.0.0.13 >> ~/.ssh/known_hosts
-   ```
+2. 主机密钥：首次连接会自动信任并写入 `~/.ssh/known_hosts`（与 OpenSSH `accept-new` 相同，之后密钥变更仍会拒绝连接）。想提前核对指纹时也可以手动 `ssh-keyscan`
 
 3. 主机名互不相同；端口 6443、9345、10250 没有被占用
 4. SELinux 为 Permissive 或 Disabled
@@ -283,8 +279,11 @@ searke image serve rke2-oci --address 0.0.0.0:5000
 
 ## 8. 常见问题
 
-**SSH 报 `knownhosts: key is unknown` 或 `key mismatch`**
-先执行 `ssh-keyscan -t ed25519,rsa,ecdsa <IP> >> ~/.ssh/known_hosts`。机器重装后需要先删除旧记录：`ssh-keygen -R <IP>`。
+**SSH 报 `knownhosts: key is unknown`**
+现在不会出现了——首次连接会自动信任并写入 `~/.ssh/known_hosts`。
+
+**SSH 报 `knownhosts: key mismatch`**
+节点重装后主机密钥变了，需要先删除旧记录：`ssh-keygen -R <IP>`，再重跑命令。
 
 **`passwordless sudo required`**
 登录用户需要配置免密 sudo，或者直接使用 root 用户。

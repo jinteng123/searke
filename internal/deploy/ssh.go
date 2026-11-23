@@ -93,9 +93,34 @@ func connectSSH(address string, cfg SSHConfig) (*Client, error) {
 	}
 
 	khPath := cluster.ExpandPath("~/.ssh/known_hosts")
-	hostKeyCB, err := knownhosts.New(khPath)
+	strict, err := strictHostKeyCallback(khPath)
 	if err != nil {
 		return nil, fmt.Errorf("load known_hosts %s: %w", khPath, err)
+	}
+	// Trust-on-first-use: an unknown host key is accepted once and
+	// recorded so later connections still pin it — like OpenSSH's
+	// StrictHostKeyChecking=accept-new. A key that was recorded before
+	// and no longer matches still fails the handshake.
+	hostKeyCB := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := strict(hostname, remote, key)
+		if err == nil {
+			return nil
+		}
+		var kerr *knownhosts.KeyError
+		if !errors.As(err, &kerr) || len(kerr.Want) != 0 {
+			return err // changed key or other failure: keep refusing
+		}
+		f, err := os.OpenFile(khPath, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("record host key in %s: %w", khPath, err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(knownhosts.Line([]string{hostname}, key) + "\n"); err != nil {
+			return fmt.Errorf("record host key in %s: %w", khPath, err)
+		}
+		fmt.Fprintf(os.Stderr, "warning: trusting new host key %s for %s; recorded in %s\n",
+			ssh.FingerprintSHA256(key), hostname, khPath)
+		return nil
 	}
 	sshCfg := &ssh.ClientConfig{
 		User:            cfg.User,
@@ -112,6 +137,23 @@ func connectSSH(address string, cfg SSHConfig) (*Client, error) {
 		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
 	return &Client{Client: conn, cfg: cfg, addr: addr, agentConn: agentConn}, nil
+}
+
+// strictHostKeyCallback builds a known_hosts verifier, creating the
+// file (and ~/.ssh) when absent so a fresh account needs no manual
+// ssh-keyscan before the first connect.
+func strictHostKeyCallback(path string) (ssh.HostKeyCallback, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(path, os.O_CREATE, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		f.Close()
+	}
+	return knownhosts.New(path)
 }
 
 // Close shuts down the SSH connection and the agent socket.
