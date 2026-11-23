@@ -93,11 +93,12 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 
 	var sshUpd *cluster.SSHSpec
 	if add.SSHUser != "" || add.SSHKey != "" || add.SSHPort != 0 || add.SSHPass != "" {
-		// Password stays in memory only — secrets are never persisted to
-		// the descriptor (spec.ssh.password is not even a YAML field).
+		// The password authenticates the NEW nodes only, in memory; it is
+		// never persisted (spec.ssh.password is not even a YAML field) and
+		// never imposed on existing cluster members.
 		if add.SSHPass != "" {
-			c.Spec.SSH.Password = add.SSHPass
-			logf(opts, "  --password applies to this run only; it is not written to %s", opts.ClusterFile)
+			opts.NodePassword = add.SSHPass
+			logf(opts, "  --password applies to the new nodes in this run only; it is not written to %s", opts.ClusterFile)
 		}
 		sshUpd = &cluster.SSHSpec{User: add.SSHUser, IdentityFile: add.SSHKey, Port: add.SSHPort}
 		conflict := func(flag, old, val string) {
@@ -135,6 +136,16 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	// Preflight before persistence: the expanded spec must connect and
 	// pass node checks, otherwise the file is left untouched so a typo
 	// never poisons the descriptor that every other command reads.
+	// Only the new nodes (plus the bootstrap server, which supplies the
+	// join token) are contacted — existing members are never dialed, so
+	// a per-node --password cannot break an already-added node.
+	opts.Only = map[string]bool{}
+	for _, n := range addServers {
+		opts.Only[n.Name] = true
+	}
+	for _, n := range addAgents {
+		opts.Only[n.Name] = true
+	}
 	opts.Cluster = c
 	if add.DryRun {
 		return Plan(opts)

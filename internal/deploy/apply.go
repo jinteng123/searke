@@ -45,6 +45,14 @@ type Options struct {
 	Cluster     *cluster.Cluster // when set, used instead of loading ClusterFile
 	StateDir    string           // defaults to the cluster file's directory
 	Log         func(format string, args ...any)
+	// Only, when non-nil, restricts connect/preflight/converge to the
+	// named nodes. The bootstrap (first) server is always included:
+	// the join token and readiness checks flow through it.
+	Only map[string]bool
+	// NodePassword authenticates nodes in Only only — lets `searke
+	// add` reach brand-new nodes without imposing one password on
+	// existing cluster members. Never persisted.
+	NodePassword string
 }
 
 // ResolvedBundle pairs the opened index with its metadata. The index
@@ -127,13 +135,23 @@ func stateDir(opts *Options) string {
 }
 
 // connectAll reaches every node (SSH or local exec) and runs preflight.
+// When opts.Only is set, nodes outside the scope are skipped entirely —
+// except the bootstrap server, which is needed for the join token.
 func connectAll(c *cluster.Cluster, opts *Options) ([]*nodeRuntime, error) {
-	sshCfg := sshConfig(c)
+	baseCfg := sshConfig(c)
+	first := c.FirstServer().Name
 	hostnames := map[string]string{}
 	var runtimes []*nodeRuntime
 	for _, n := range c.AllNodes() {
+		if opts.Only != nil && !opts.Only[n.Name] && n.Name != first {
+			continue
+		}
+		cfg := baseCfg
+		if opts.Only != nil && opts.Only[n.Name] && opts.NodePassword != "" {
+			cfg.Password = opts.NodePassword
+		}
 		role := c.RoleOf(n.Name)
-		cl, err := Connect(n.Address, sshCfg)
+		cl, err := Connect(n.Address, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", n.Name, err)
 		}

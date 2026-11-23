@@ -302,7 +302,7 @@ func newClusterCmds() []*cobra.Command {
 	addCmd.Flags().StringSliceVar(&add.Agents, "agents", nil, "worker addresses to add (alias: --nodes)")
 	addCmd.Flags().StringVar(&add.SSHUser, "ssh-user", "", "set spec.ssh.user in the descriptor (needed by searke run clusters)")
 	addCmd.Flags().StringVar(&add.SSHKey, "ssh-key", "", "set spec.ssh.identityFile")
-	addCmd.Flags().StringVar(&add.SSHPass, "password", "", "SSH password for this run only (not written to cluster.yaml)")
+	addCmd.Flags().StringVar(&add.SSHPass, "password", "", "SSH password for the new nodes only, this run only (not written to cluster.yaml)")
 	addCmd.Flags().IntVar(&add.SSHPort, "ssh-port", 0, "set spec.ssh.port")
 	addCmd.Flags().BoolVar(&addDryRun, "dry-run", false, "show the plan without modifying cluster.yaml or the nodes")
 
