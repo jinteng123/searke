@@ -122,7 +122,7 @@ func runImageLoad(tarPath, outDir string) error {
 }
 
 func deployOpts(file string) *deploy.Options {
-	return &deploy.Options{ClusterFile: file, Log: logf}
+	return &deploy.Options{ClusterFile: file, Log: logf, StrictHostKey: strictHostKeyFlag}
 }
 
 // loggedDeployOpts mirrors output into ~/.searke/logs/<cluster>/ for
@@ -138,7 +138,7 @@ func loggedDeployOpts(file string) (*deploy.Options, func(), error) {
 		return nil, nil, err
 	}
 	logger.Log("run log: %s", logger.Path())
-	return &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log},
+	return &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log, StrictHostKey: strictHostKeyFlag},
 		func() { _ = logger.Close() }, nil
 }
 
@@ -165,7 +165,7 @@ func runApply(ctx context.Context, file string) error {
 	}
 	defer logger.Close()
 	logger.Log("run log: %s", logger.Path())
-	return deploy.Apply(ctx, &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log})
+	return deploy.Apply(ctx, &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log, StrictHostKey: strictHostKeyFlag})
 }
 
 // runSingle implements `searke run`: synthesize a one-node local
@@ -180,7 +180,7 @@ func runSingle(ctx context.Context, ro deploy.RunOptions, dryRun bool) error {
 	if dryRun {
 		logf("single-node cluster %q: node %s @ %s", c.Name(), c.Spec.Servers[0].Name, c.RegistrationHost())
 		logf("cluster.yaml: %s (reuse: searke apply|status|snapshot -f %s)", file, file)
-		opts := &deploy.Options{ClusterFile: file, Cluster: c, Log: logf}
+		opts := &deploy.Options{ClusterFile: file, Cluster: c, Log: logf, StrictHostKey: strictHostKeyFlag}
 		return deploy.Plan(opts)
 	}
 	logger, err := newRunLogger(c.Name())
@@ -191,7 +191,7 @@ func runSingle(ctx context.Context, ro deploy.RunOptions, dryRun bool) error {
 	logger.Log("run log: %s", logger.Path())
 	logger.Log("single-node cluster %q: node %s @ %s", c.Name(), c.Spec.Servers[0].Name, c.RegistrationHost())
 	logger.Log("cluster.yaml: %s (reuse: searke apply|status|snapshot -f %s)", file, file)
-	opts := &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log}
+	opts := &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log, StrictHostKey: strictHostKeyFlag}
 	return deploy.Apply(ctx, opts)
 }
 
@@ -208,7 +208,7 @@ func runRemoteCluster(ctx context.Context, ro deploy.RunOptions, dryRun bool) er
 	if dryRun {
 		logf("%s", msg)
 		logf("cluster.yaml: %s", file)
-		return deploy.Plan(&deploy.Options{ClusterFile: file, Cluster: c, Log: logf})
+		return deploy.Plan(&deploy.Options{ClusterFile: file, Cluster: c, Log: logf, StrictHostKey: strictHostKeyFlag})
 	}
 	logger, err := newRunLogger(c.Name())
 	if err != nil {
@@ -218,7 +218,7 @@ func runRemoteCluster(ctx context.Context, ro deploy.RunOptions, dryRun bool) er
 	logger.Log("run log: %s", logger.Path())
 	logger.Log("%s", msg)
 	logger.Log("cluster.yaml: %s", file)
-	return deploy.Apply(ctx, &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log})
+	return deploy.Apply(ctx, &deploy.Options{ClusterFile: file, Cluster: c, Log: logger.Log, StrictHostKey: strictHostKeyFlag})
 }
 
 func runStatus(file string) error {

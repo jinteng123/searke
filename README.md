@@ -90,7 +90,7 @@ crictl ps                # kubectl/crictl/ctr/rke2 已链接到 /usr/local/bin
 每个节点需要满足：
 
 1. 可以用 **SSH 密钥或密码**登录（密码用 `--password`，仅当次生效、不落盘），登录用户**免密 sudo**，或者直接用 root
-2. 主机密钥：首次连接会自动信任并写入 `~/.ssh/known_hosts`（与 OpenSSH `accept-new` 相同，之后密钥变更仍会拒绝连接）。想提前核对指纹时也可以手动 `ssh-keyscan`
+2. 主机密钥：首次连接会自动信任并写入 `~/.ssh/known_hosts`（与 OpenSSH `accept-new` 相同，之后密钥变更仍会拒绝连接）。不信任首次连接时加全局参数 `--strict-host-key`，或先手动 `ssh-keyscan`
 
 3. 主机名互不相同；端口 6443、9345、10250 没有被占用
 4. SELinux 为 Permissive 或 Disabled
@@ -192,8 +192,9 @@ searke kubeconfig -f cluster.yaml --server 10.0.0.12:6443
 `add` 的行为：
 
 - 只连接本次新增的节点和引导 server，不会去连其他已有节点
-- `--password` 只用于本次新增的节点，每台节点可以用各自的密码一台台添加
+- `--password` 只用于本次新增的节点，每台节点可以用各自的密码一台台添加；用密码连上的节点会自动授权一把 searke 生成的集群密钥（保存为 `<集群目录>/.searke/id_ed25519` 并写入 `spec.ssh.identityFile`），之后的 `apply`/`exec`/`uninstall` 等命令直接走密钥，不需要再传密码。显式给了 `--ssh-key` 时推送的是那把 key 的公钥
 - 新增的工作节点以**机器的主机名**作为节点名（主机名不合法或与已有节点重名时退回 `agent-NN`）；新增的控制平面节点仍使用 `server-NN`，避免名字排序改变引导节点
+- `--password-stdin` 从 stdin 读密码，避免密码出现在进程列表和 shell 历史
 
 ### 升级 RKE2
 
@@ -289,7 +290,7 @@ searke image serve rke2-oci --address 0.0.0.0:5000
 现在不会出现了——首次连接会自动信任并写入 `~/.ssh/known_hosts`。
 
 **SSH 报 `knownhosts: key mismatch`**
-节点重装后主机密钥变了，需要先删除旧记录：`ssh-keygen -R <IP>`，再重跑命令。
+节点重装后主机密钥变了，需要先删除旧记录：`ssh-keygen -R <IP>`，再重跑命令。节点没重装时报这个错，也可能是 known_hosts 里固定的是另一种类型的密钥（比如 ed25519 记录而协商出 ecdsa）——用 `ssh-keygen -F <IP>` 查看已记录的类型。
 
 **`passwordless sudo required`**
 登录用户需要配置免密 sudo，或者直接使用 root 用户。

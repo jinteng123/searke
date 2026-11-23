@@ -3,7 +3,6 @@ package deploy
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/jint/searke/internal/cluster"
@@ -121,6 +120,24 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 			c.Spec.SSH.Port = add.SSHPort
 		}
 	}
+	// Password is never persisted, so a password-added node would be
+	// unreachable for every later command. When the descriptor has no
+	// key of its own, generate a per-cluster key and record it as
+	// identityFile; whichever key the descriptor then carries is pushed
+	// onto each password-authenticated node during connect (see
+	// maybeProvisionKey).
+	if add.SSHPass != "" && c.Spec.SSH.IdentityFile == "" {
+		if priv, _, err := ensureManagedKey(stateDir(opts), c.Name()); err != nil {
+			logf(opts, "  warning: cannot generate cluster SSH key (%v); password-added nodes will not be reachable by later commands", err)
+		} else {
+			c.Spec.SSH.IdentityFile = priv
+			if sshUpd == nil {
+				sshUpd = &cluster.SSHSpec{}
+			}
+			sshUpd.IdentityFile = priv
+			logf(opts, "  generated cluster SSH key %s; it is authorized on password-added nodes and stored in %s", priv, opts.ClusterFile)
+		}
+	}
 	// Agents take their real hostname as the node name — kubectl then
 	// shows the machine name instead of a synthetic agent-NN. Added
 	// servers keep generated names: a hostname sorting before the
@@ -173,7 +190,20 @@ func Add(ctx context.Context, opts *Options, add *AddOptions) error {
 	return Apply(ctx, opts)
 }
 
-var rfc1123Name = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
+// agentNameFromHostname decides the node name for a probed hostname.
+// Returns the sanitized hostname, or the generated fallback plus a
+// human-readable reason when the hostname is unusable or taken.
+func agentNameFromHostname(host, generated string, taken map[string]bool) (string, string) {
+	host = cluster.SanitizeNodeName(host)
+	switch {
+	case host == "" || host == "node" || host == "localhost":
+		return generated, "not usable as a node name"
+	case taken[host]:
+		return generated, "already a node name in this cluster"
+	default:
+		return host, ""
+	}
+}
 
 // nameAgentsByHostname replaces the generated agent-NN names with each
 // new node's real hostname. It is best effort: a node that cannot be
@@ -182,29 +212,28 @@ var rfc1123Name = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 // preflight that follows).
 func nameAgentsByHostname(c *cluster.Cluster, agents []cluster.Node, taken map[string]bool, opts *Options) {
 	cfg := sshConfig(c)
+	cfg.StrictHostKey = opts.StrictHostKey
 	if opts.NodePassword != "" {
 		cfg.Password = opts.NodePassword
 	}
 	for i := range agents {
 		ex, err := Connect(agents[i].Address, cfg)
 		if err != nil {
+			logf(opts, "  %s: hostname probe failed (%v), keeping name %s", agents[i].Address, err, agents[i].Name)
 			continue
 		}
 		res, err := ex.Run("hostname")
 		ex.Close()
-		if err != nil || res.ExitCode != 0 {
+		if err != nil || res == nil || res.ExitCode != 0 {
+			logf(opts, "  %s: hostname probe failed, keeping name %s", agents[i].Address, agents[i].Name)
 			continue
 		}
-		host := strings.ToLower(strings.TrimSpace(res.Stdout))
-		switch {
-		case !rfc1123Name.MatchString(host) || host == "localhost":
-			logf(opts, "  %s: hostname %q is not usable as a node name, keeping %s", agents[i].Address, host, agents[i].Name)
-		case taken[host]:
-			logf(opts, "  %s: hostname %q is already a node name in this cluster, keeping %s", agents[i].Address, host, agents[i].Name)
-		default:
+		if name, reason := agentNameFromHostname(res.Stdout, agents[i].Name, taken); name != agents[i].Name {
 			delete(taken, agents[i].Name)
-			taken[host] = true
-			agents[i].Name = host
+			taken[name] = true
+			agents[i].Name = name
+		} else if reason != "" {
+			logf(opts, "  %s: hostname %q is %s, keeping %s", agents[i].Address, strings.TrimSpace(res.Stdout), reason, agents[i].Name)
 		}
 	}
 }

@@ -247,6 +247,23 @@ func RemoteCluster(ro RunOptions) (*cluster.Cluster, string, error) {
 		"cluster-cidr": ro.ClusterCIDR,
 		"service-cidr": ro.ServiceCIDR,
 	}
+	// Password auth leaves no credential behind for later commands, so
+	// when the operator gave a password but no --ssh-key, generate a
+	// per-cluster key up front: it is recorded as identityFile and
+	// authorized on each node during apply (see maybeProvisionKey).
+	// Generated before the rerun comparison so sameRemoteSpec can treat
+	// it as an upgrade path rather than a user flag conflict.
+	var managed string
+	if ro.SSHPass != "" && ro.SSHKey == "" {
+		if priv, _, err := ensureManagedKey(filepath.Dir(file), ro.Name); err != nil {
+			if ro.Log != nil {
+				ro.Log("warning: cannot generate cluster SSH key (%v); password-installed nodes will not be reachable by later commands", err)
+			}
+		} else {
+			managed = priv
+			want.Spec.SSH.IdentityFile = priv
+		}
+	}
 	if err := want.Validate(); err != nil {
 		return nil, "", fmt.Errorf("generated cluster invalid: %w", err)
 	}
@@ -257,7 +274,7 @@ func RemoteCluster(ro RunOptions) (*cluster.Cluster, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		if !sameRemoteSpec(existing, want) {
+		if !sameRemoteSpec(existing, want, managedKeyPath(filepath.Dir(file))) {
 			return nil, "", fmt.Errorf("%s already exists with a different node set; "+
 				"use `searke add` / `searke apply -f`, or pass --name/--home for a separate cluster", file)
 		}
@@ -272,21 +289,35 @@ func RemoteCluster(ro RunOptions) (*cluster.Cluster, string, error) {
 		return nil, "", err
 	}
 	// Password is applied to the in-memory cluster only — secrets are
-	// never persisted to the descriptor.
+	// never persisted to the descriptor. A descriptor from before the
+	// managed key existed gets it recorded now so password-installed
+	// nodes become key-reachable too.
 	c.Spec.SSH.Password = ro.SSHPass
+	if managed != "" && c.Spec.SSH.IdentityFile == "" {
+		c.Spec.SSH.IdentityFile = managed
+		if err := writeCluster(file, c); err != nil && ro.Log != nil {
+			ro.Log("warning: cannot record cluster SSH key in %s: %v", file, err)
+		}
+	}
 	return c, file, nil
 }
 
 // sameRemoteSpec compares the parts of a generated spec that a rerun
 // must keep identical; the bundle is allowed to differ (it drives an
-// upgrade on rerun).
-func sameRemoteSpec(got, want *cluster.Cluster) bool {
+// upgrade on rerun). The managed key path is exempt in either
+// direction: it is auto-generated, so recording it (or having it
+// recorded already) never counts as a user-flag conflict.
+func sameRemoteSpec(got, want *cluster.Cluster, managed string) bool {
+	if got.Spec.SSH.IdentityFile != want.Spec.SSH.IdentityFile &&
+		want.Spec.SSH.IdentityFile != managed &&
+		!(want.Spec.SSH.IdentityFile == "" && got.Spec.SSH.IdentityFile == managed) {
+		return false
+	}
 	if got.Name() != want.Name() ||
 		got.Spec.RKE2.CNI != want.Spec.RKE2.CNI ||
 		got.Spec.RKE2.Insecure != want.Spec.RKE2.Insecure ||
 		got.Spec.Endpoints != want.Spec.Endpoints ||
 		got.Spec.SSH.User != want.Spec.SSH.User ||
-		got.Spec.SSH.IdentityFile != want.Spec.SSH.IdentityFile ||
 		got.Spec.SSH.Port != want.Spec.SSH.Port ||
 		got.Spec.RKE2Config["cluster-cidr"] != want.Spec.RKE2Config["cluster-cidr"] ||
 		got.Spec.RKE2Config["service-cidr"] != want.Spec.RKE2Config["service-cidr"] {

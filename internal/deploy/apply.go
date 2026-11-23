@@ -53,6 +53,9 @@ type Options struct {
 	// add` reach brand-new nodes without imposing one password on
 	// existing cluster members. Never persisted.
 	NodePassword string
+	// StrictHostKey disables trust-on-first-use host key acceptance:
+	// unknown hosts are refused and must be in known_hosts already.
+	StrictHostKey bool
 }
 
 // ResolvedBundle pairs the opened index with its metadata. The index
@@ -147,14 +150,26 @@ func connectAll(c *cluster.Cluster, opts *Options) ([]*nodeRuntime, error) {
 			continue
 		}
 		cfg := baseCfg
+		cfg.StrictHostKey = opts.StrictHostKey
 		if opts.Only != nil && opts.Only[n.Name] && opts.NodePassword != "" {
 			cfg.Password = opts.NodePassword
 		}
 		role := c.RoleOf(n.Name)
 		cl, err := Connect(n.Address, cfg)
+		if err != nil && n.Name == first && cfg.Password == "" && opts.NodePassword != "" && isAuthErr(err) {
+			// The bootstrap may itself have been installed via a
+			// password that was never persisted; the run-scoped
+			// password is the operator's declared credential for
+			// this cluster, so retry with it before giving up.
+			cfg.Password = opts.NodePassword
+			cl, err = Connect(n.Address, cfg)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", n.Name, err)
 		}
+		// A node reached by password gets the cluster key authorized
+		// so future runs (apply/exec/uninstall) authenticate by key.
+		maybeProvisionKey(cl, n.Name, cfg, opts)
 		mode := "ssh"
 		if _, ok := cl.(*LocalExecutor); ok {
 			mode = "local exec"
@@ -415,7 +430,7 @@ func Apply(ctx context.Context, opts *Options) error {
 			logf(opts, "  warning %s: CLI setup failed (cluster is still healthy): %v", r.node.Name, err)
 		}
 	}
-	if err := st.Log("apply", "cluster converged: "+fmt.Sprint(len(rts))+" nodes"); err != nil {
+	if err := st.Log("apply", "cluster converged: "+fmt.Sprint(len(c.AllNodes()))+" nodes"); err != nil {
 		return err
 	}
 	if cluster.IsLocalAddress(first.node.Address) {

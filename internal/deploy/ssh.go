@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -19,6 +20,15 @@ import (
 	"github.com/jint/searke/internal/cluster"
 )
 
+// strictHostKeyGlobal mirrors SSHConfig.StrictHostKey for callers that
+// build configs straight from the descriptor (exec/scp/status/...) and
+// never see an Options. Set via SetStrictHostKey from --strict-host-key.
+var strictHostKeyGlobal bool
+
+// SetStrictHostKey makes every SSH connection in this process refuse
+// unknown host keys (no trust-on-first-use).
+func SetStrictHostKey(v bool) { strictHostKeyGlobal = v }
+
 // SSHConfig configures connections to one node.
 type SSHConfig struct {
 	User         string
@@ -27,6 +37,9 @@ type SSHConfig struct {
 	Password     string
 	Sudo         bool
 	Timeout      time.Duration
+	// StrictHostKey refuses unknown hosts instead of the default
+	// trust-on-first-use recording.
+	StrictHostKey bool
 }
 
 // Client is an SSH connection to a node.
@@ -107,8 +120,14 @@ func connectSSH(address string, cfg SSHConfig) (*Client, error) {
 			return nil
 		}
 		var kerr *knownhosts.KeyError
-		if !errors.As(err, &kerr) || len(kerr.Want) != 0 {
-			return err // changed key or other failure: keep refusing
+		if !errors.As(err, &kerr) {
+			return err
+		}
+		if len(kerr.Want) != 0 {
+			return fmt.Errorf("%w (another host-key type may be pinned for this host — inspect recorded keys with `ssh-keygen -F %s`)", err, strings.Split(hostname, ":")[0])
+		}
+		if cfg.StrictHostKey || strictHostKeyGlobal {
+			return err
 		}
 		f, err := os.OpenFile(khPath, os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
@@ -127,6 +146,18 @@ func connectSSH(address string, cfg SSHConfig) (*Client, error) {
 		Auth:            auths,
 		HostKeyCallback: hostKeyCB,
 		Timeout:         cfg.Timeout,
+		// Prefer ed25519 like OpenSSH: known_hosts files written by
+		// ssh-keyscan/ssh usually pin the ed25519 key, and our own
+		// TOFU records whichever type was negotiated — preferring it
+		// keeps both consistent.
+		HostKeyAlgorithms: []string{
+			ssh.CertAlgoED25519v01, ssh.KeyAlgoED25519,
+			ssh.CertAlgoECDSA256v01, ssh.CertAlgoECDSA384v01, ssh.CertAlgoECDSA521v01,
+			ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521,
+			ssh.CertAlgoRSASHA256v01, ssh.CertAlgoRSASHA512v01, ssh.CertAlgoRSAv01,
+			ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSA,
+			ssh.InsecureCertAlgoDSAv01, ssh.InsecureKeyAlgoDSA,
+		},
 	}
 	addr := net.JoinHostPort(address, fmt.Sprint(cfg.Port))
 	conn, err := ssh.Dial("tcp", addr, sshCfg)
